@@ -228,3 +228,9 @@ No diagnostic application can guarantee a cause for every hard crash. Sudden
 power loss, firmware deadlock, motherboard failure or some GPU lockups can stop
 the machine before the final evidence is written. Ranked causes are explicit
 hypotheses based on the evidence available, not certainty.
+
+## Engineering standard
+
+Engineering principles: v5.1  
+Assurance tier: 2  
+Canonical repository: https://github.com/Parris-Tech-Services/FedoraCrashDoctor
