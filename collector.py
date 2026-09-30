@@ -30,6 +30,7 @@ from freeze_classifiers import classify_freeze_evidence
 from incident_model import attach_incident_identity
 from report_schema import REPORT_SCHEMA_VERSION, validate_report
 from telemetry_timeline import build_telemetry_timeline
+from pressure_incident import build_pressure_incident
 from version import app_version
 
 MAX_OUTPUT = 700_000
@@ -1623,6 +1624,11 @@ def collect(
     freeze_classes = classify_freeze_evidence(findings, canary)
     telemetry_timeline = build_telemetry_timeline(canary.get("samples", []))
     incidents, boot_warnings, unresolved = build_incidents(findings, checks)
+    # Thrashing caused by a userspace OOM leaves no kernel log line, so it
+    # never becomes a journal incident; promote canary-measured pressure.
+    pressure = build_pressure_incident(canary.get("samples", []), metadata.get("boot_id", ""), confidence_label)
+    if pressure:
+        incidents.append(attach_incident_identity(pressure, checks))
     overall, hypotheses = build_overall(incidents, boot_warnings)
     for incident in incidents:
         # Explainable confidence for every hypothesis this incident already
