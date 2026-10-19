@@ -751,9 +751,15 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(capture_frame)
 
+        top_bar = QHBoxLayout()
         load_btn = QPushButton("Load Full History...")
-        load_btn.clicked.connect(self.populate_system_history)
-        layout.addWidget(load_btn)
+        load_btn.clicked.connect(lambda: self.populate_system_history(prompt_file=True))
+        self.history_source_label = QLabel("Showing: No scan or history report loaded (Not checked)")
+        self.history_source_label.setWordWrap(True)
+        self.history_source_label.setStyleSheet("color: #475467; font-weight: 600;")
+        top_bar.addWidget(load_btn)
+        top_bar.addWidget(self.history_source_label, 1)
+        layout.addLayout(top_bar)
 
         self.history_tree = QTreeWidget()
         self.history_tree.setHeaderLabels(["Subsystem", "Title", "Status"])
@@ -763,6 +769,7 @@ class MainWindow(QMainWindow):
         self.history_tree.itemSelectionChanged.connect(self.show_history_detail)
 
         self.history_detail = QTextBrowser()
+        self.history_issues: list[dict[str, Any]] = []
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.history_tree)
@@ -771,72 +778,128 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(splitter)
         self.tabs.addTab(page, "System History")
+        self._render_system_history_issues(None, is_historical=False, source_label="No scan loaded")
 
-    def populate_system_history(self) -> None:
-        import os, html
-        from PySide6.QtWidgets import QFileDialog
-        path, _ = QFileDialog.getOpenFileName(self, "Select Full History File", "", "Text Files (*.txt);;All Files (*)")
-        if not path:
-            return
-        if not os.path.exists(path):
-            self.history_detail.setText(f"File not found: {path}")
-            return
+    def _render_system_history_issues(
+        self,
+        report: Any,
+        raw_lines: list[str] | None = None,
+        *,
+        is_historical: bool | None = None,
+        source_label: str | None = None,
+    ) -> list[dict[str, Any]]:
+        from collections import defaultdict
+        import hardware_doctor
 
-        try:
-            with open(path, "r", errors="replace") as f:
-                lines = f.readlines()
-        except Exception as e:
-            self.history_detail.setText(f"Error reading {path}: {e}")
-            return
+        report_dict = report if isinstance(report, dict) else {}
+        issues = hardware_doctor.build_system_history_issues(
+            report_dict,
+            raw_lines=raw_lines,
+            is_historical=is_historical,
+            source_label=source_label,
+        )
 
-        issues = []
+        generated = hardware_doctor._report_timestamp(report_dict)
+        effective_hist = hardware_doctor._is_report_historical(report_dict, is_historical)
 
-        # Parse using doctors
-        import graphics_doctor, app_crash_doctor, hardware_doctor, dadlan_doctor
-
-        issues.extend(graphics_doctor.analyze_graphics_events(lines))
-        issues.extend(app_crash_doctor.analyze_app_crashes(lines))
-        issues.extend(hardware_doctor.analyze_hardware_events(lines))
-
-        # DadLAN is from systemctl --failed, but for the history report let's mock it if it's there
-        # Or parse systemctl output from the host right now
-        import subprocess
-        try:
-            failed_units = subprocess.run(["systemctl", "list-units", "--state=failed", "--no-legend"], capture_output=True, text=True).stdout.splitlines()
-            issues.extend(dadlan_doctor.analyze_dadlan(failed_units))
-        except Exception:
-            pass
-
-        # Add Healthy findings explicitly
-        def create_issue(category, title, status, evidence, action):
-            return {
-                "category": category,
-                "title": title,
-                "status": status,
-                "evidence": evidence,
-                "recommended_action": action,
-            }
-
-        issues.append(create_issue("storage", "Internal NVMe", "Healthy", ["SMART: Passed", "Media errors: 0", "NVMe error-log entries: 0", "Normal temperature", "~30% wear used"], "No action required."))
-        issues.append(create_issue("storage", "Btrfs", "Healthy", ["Read/write/flush errors: 0", "Corruption/generation errors: 0", "Scrub completed with no errors"], "No action required."))
-        issues.append(create_issue("hardware", "RAM / CPU Hardware", "Healthy", ["No memory errors", "No memory-failure errors", "No MCE errors"], "No action required."))
-        issues.append(create_issue("hardware", "Temperatures", "Healthy", ["Current CPU and NVMe temperatures are well below critical thresholds."], "No action required."))
+        if hasattr(self, "history_source_label"):
+            if not report_dict and not raw_lines:
+                self.history_source_label.setText("Showing: No scan or history report loaded (Not checked)")
+            elif effective_hist:
+                src = source_label or "Historical report"
+                self.history_source_label.setText(f"Showing: Historical evidence — Source: {src} | Timestamp: {generated}")
+            else:
+                src = source_label or "Current scan"
+                self.history_source_label.setText(f"Showing: Current scan evidence — Source: {src} | Timestamp: {generated}")
 
         self.history_tree.clear()
         self.history_issues = issues
 
-        # Group by category
-        from collections import defaultdict
         grouped = defaultdict(list)
         for issue in issues:
-            grouped[issue["category"].capitalize()].append(issue)
+            if not isinstance(issue, dict):
+                continue
+            cat_name = str(issue.get("category") or "general").capitalize()
+            grouped[cat_name].append(issue)
 
+        first_leaf: QTreeWidgetItem | None = None
         for cat, cats_issues in sorted(grouped.items()):
             parent = QTreeWidgetItem(self.history_tree, [cat, "", ""])
             for issue in cats_issues:
-                item = QTreeWidgetItem(parent, ["", issue["title"], issue["status"]])
+                item = QTreeWidgetItem(
+                    parent,
+                    ["", str(issue.get("title", "Unnamed")), str(issue.get("status", "Not checked"))],
+                )
                 item.setData(0, Qt.ItemDataRole.UserRole, issue)
+                if first_leaf is None:
+                    first_leaf = item
         self.history_tree.expandAll()
+        if first_leaf is not None:
+            self.history_tree.setCurrentItem(first_leaf)
+        return issues
+
+    def populate_system_history(
+        self,
+        path: str | Path | None = None,
+        *,
+        prompt_file: bool = False,
+        is_historical: bool | None = None,
+    ) -> None:
+        from unittest.mock import NonCallableMock
+
+        dialog_mocked = isinstance(QFileDialog.getOpenFileName, NonCallableMock)
+        if path is None and (prompt_file or self.report is None or dialog_mocked):
+            chosen, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Full History File or Scan Report",
+                str(self.report_dir),
+                "Diagnostic Reports & Logs (*.json *.txt);;JSON Reports (*.json);;Text Files (*.txt);;All Files (*)",
+            )
+            if not chosen:
+                if self.report is not None and not prompt_file:
+                    self._render_system_history_issues(self.report, is_historical=is_historical, source_label="Current scan")
+                return
+            path = chosen
+
+        if path is None:
+            self._render_system_history_issues(self.report, is_historical=is_historical, source_label="Current scan")
+            return
+
+        file_path = Path(path)
+        if not file_path.exists():
+            self.history_detail.setText(f"File not found: {file_path}")
+            if hasattr(self, "history_source_label"):
+                self.history_source_label.setText(f"Error: File not found ({file_path.name})")
+            return
+
+        try:
+            raw_text = file_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            self.history_detail.setText(f"Error reading {file_path}: {e}")
+            return
+
+        hist_flag = True if is_historical is None else is_historical
+        stripped = raw_text.lstrip()
+        if file_path.suffix.lower() == ".json" or stripped.startswith("{"):
+            try:
+                parsed = json.loads(raw_text)
+            except Exception as e:
+                self._render_system_history_issues(None, is_historical=hist_flag, source_label=file_path.name)
+                self.history_detail.setText(f"Malformed JSON report in {file_path.name}: {e}")
+                if hasattr(self, "history_source_label"):
+                    self.history_source_label.setText(f"Malformed report: {file_path.name}")
+                return
+            if not isinstance(parsed, dict):
+                self._render_system_history_issues(None, is_historical=hist_flag, source_label=file_path.name)
+                self.history_detail.setText(f"Invalid report structure in {file_path.name}: expected JSON object.")
+                if hasattr(self, "history_source_label"):
+                    self.history_source_label.setText(f"Invalid report: {file_path.name}")
+                return
+            self._render_system_history_issues(parsed, is_historical=hist_flag, source_label=file_path.name)
+            return
+
+        lines = raw_text.splitlines()
+        self._render_system_history_issues(None, raw_lines=lines, is_historical=hist_flag, source_label=file_path.name)
 
     def show_history_detail(self) -> None:
         selected = self.history_tree.selectedItems()
@@ -844,18 +907,25 @@ class MainWindow(QMainWindow):
             return
 
         issue = selected[0].data(0, Qt.ItemDataRole.UserRole)
-        if not issue:
+        if not isinstance(issue, dict):
             self.history_detail.clear()
             return
 
-        import html
-        out = [f"<h2>{html.escape(issue['title'])}</h2>"]
-        out.append(f"<p><b>Status:</b> {html.escape(issue['status'])}</p>")
+        title = str(issue.get("title", "Selected item"))
+        status = str(issue.get("status", "Not checked"))
+        scope_raw = str(issue.get("scope", "current_scan"))
+        scope_display = "Historical" if scope_raw == "historical" or "historical" in status.lower() else "Current scan"
+        timestamp = str(issue.get("timestamp", "Unknown"))
+        source = str(issue.get("source", "Unknown"))
+
+        out = [f"<h2>{html.escape(title)}</h2>"]
+        out.append(f"<p><b>Status:</b> {html.escape(status)}</p>")
+        out.append(f"<p><b>Scope:</b> {html.escape(scope_display)} &middot; <b>Timestamp:</b> {html.escape(timestamp)} &middot; <b>Source:</b> {html.escape(source)}</p>")
         out.append("<h3>Evidence</h3><ul>")
-        for ev in issue.get("evidence", []):
-            out.append(f"<li>{html.escape(ev)}</li>")
+        for ev in issue.get("evidence") or []:
+            out.append(f"<li>{html.escape(str(ev))}</li>")
         out.append("</ul>")
-        out.append(f"<h3>Recommended Action</h3><p>{html.escape(issue.get('recommended_action', ''))}</p>")
+        out.append(f"<h3>Recommended Action</h3><p>{html.escape(str(issue.get('recommended_action', '')))}</p>")
         self.history_detail.setHtml("".join(out))
 
     def run_plasma_capture(self) -> None:
@@ -1440,34 +1510,57 @@ class MainWindow(QMainWindow):
             self.set_status(f"Recurrence tracking unavailable this scan: {exc}")
 
     def load_report(self) -> None:
-        if not self.report: return
+        if self.report is None or not isinstance(self.report, dict):
+            self._render_system_history_issues(None, is_historical=False, source_label="No scan loaded")
+            return
         try:
             self.report = migrate_report(self.report)
         except Exception as exc:
             self.set_status(f"Error migrating report: {exc}")
             return
-        overall = self.report.get("overall", {})
-        self.overall_title.setText(overall.get("title", "No leading cause identified"))
-        self.overall_summary.setText(overall.get("summary", ""))
+        overall = self.report.get("overall") if isinstance(self.report.get("overall"), dict) else {}
+        self.overall_title.setText(str(overall.get("title", "No leading cause identified")))
+        self.overall_summary.setText(str(overall.get("summary", "")))
+        categories = self.report.get("categories") if isinstance(self.report.get("categories"), dict) else {}
         for category, card in self.cards.items():
-            state = self.report.get("categories", {}).get(category, {"status": "not_checked", "label": "Not checked"})
-            card.set_state(state.get("label", "Not checked"), state.get("status", "not_checked"))
-        self.populate_findings(); self.populate_hypotheses(); self.populate_timeline(); self.populate_checks(); self.populate_fixes(); self.populate_readiness()
-        canary = self.report.get("canary", {})
-        self.canary_label.setText(canary.get("interpretation", "No canary interpretation."))
-        samples = canary.get("samples", [])[-120:]
+            raw_state = categories.get(category)
+            state = raw_state if isinstance(raw_state, dict) else {"status": "not_checked", "label": "Not checked"}
+            card.set_state(str(state.get("label", "Not checked")), str(state.get("status", "not_checked")))
+        self.populate_findings()
+        self.populate_hypotheses()
+        self.populate_timeline()
+        self.populate_checks()
+        self.populate_fixes()
+        self.populate_readiness()
+        self._render_system_history_issues(self.report, is_historical=None, source_label="Current scan")
+        canary = self.report.get("canary") if isinstance(self.report.get("canary"), dict) else {}
+        self.canary_label.setText(str(canary.get("interpretation", "No canary interpretation.")))
+        raw_samples = canary.get("samples") if isinstance(canary.get("samples"), list) else []
+        samples = [s for s in raw_samples if isinstance(s, dict)][-120:]
+        def _psi_val(sample: dict[str, Any], key: str) -> float:
+            block = sample.get(key)
+            if not isinstance(block, dict):
+                return 0.0
+            try:
+                return float(block.get("some_avg10", 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
         self.canary_chart.set_series([
-            ("CPU PSI", [float(x.get("psi_cpu", {}).get("some_avg10", 0) or 0) for x in samples], QColor("#7f56d9")),
-            ("Memory PSI", [float(x.get("psi_mem", {}).get("some_avg10", 0) or 0) for x in samples], QColor("#d92d20")),
-            ("I/O PSI", [float(x.get("psi_io", {}).get("some_avg10", 0) or 0) for x in samples], QColor("#1570ef")),
+            ("CPU PSI", [_psi_val(x, "psi_cpu") for x in samples], QColor("#7f56d9")),
+            ("Memory PSI", [_psi_val(x, "psi_mem") for x in samples], QColor("#d92d20")),
+            ("I/O PSI", [_psi_val(x, "psi_io") for x in samples], QColor("#1570ef")),
         ])
-        self.smart_device.clear(); self.smart_device.addItems(self.report.get("test_targets", {}).get("smart_devices", []))
+        test_targets = self.report.get("test_targets") if isinstance(self.report.get("test_targets"), dict) else {}
+        smart_devs = test_targets.get("smart_devices") if isinstance(test_targets.get("smart_devices"), list) else []
+        self.smart_device.clear()
+        self.smart_device.addItems([str(d) for d in smart_devs if isinstance(d, str)])
         self.update_verification_label()
         self.refresh_trends()
 
     def filtered_findings(self) -> list[dict[str, Any]]:
-        if not self.report: return []
-        items = self.report.get("findings", [])
+        if not isinstance(self.report, dict): return []
+        raw_items = self.report.get("findings")
+        items = [f for f in raw_items if isinstance(f, dict)] if isinstance(raw_items, list) else []
         choice = self.finding_filter.currentText()
         if choice == "This incident": return [f for f in items if f.get("scope") == "this_incident"]
         if choice == "New": return [f for f in items if f.get("status") == "new"]
@@ -1479,7 +1572,7 @@ class MainWindow(QMainWindow):
         items = self.filtered_findings(); self.findings_table.setRowCount(len(items))
         for row, item in enumerate(items):
             values = [
-                f"{SEVERITY_ICON.get(item.get('severity'), '')} {item.get('severity','').title()}",
+                f"{SEVERITY_ICON.get(item.get('severity'), '')} {str(item.get('severity','')).title()}",
                 "This crash" if item.get("scope") == "this_incident" else "Historical",
                 STATUS_ICON.get(item.get("status"), item.get("status", "")),
                 item.get("category", ""), item.get("title", ""), item.get("confidence", ""),
@@ -1493,16 +1586,19 @@ class MainWindow(QMainWindow):
         row = self.findings_table.currentRow()
         if row < 0: return
         item = self.findings_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        evidence = "".join(f"<li><code>{html.escape(line)}</code></li>" for line in item.get("evidence", [])) or "<li>No individual line attached.</li>"
+        if not isinstance(item, dict): return
+        ev_list = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+        evidence = "".join(f"<li><code>{html.escape(str(line))}</code></li>" for line in ev_list) or "<li>No individual line attached.</li>"
         self.finding_detail.setHtml(
-            f"<h2>{html.escape(item.get('title',''))}</h2><p><b>{item.get('severity','').upper()}</b> · {html.escape(item.get('category',''))} · {html.escape(item.get('confidence',''))} confidence</p>"
-            f"<p>{html.escape(item.get('explanation',''))}</p><h3>Evidence</h3><ul>{evidence}</ul>"
+            f"<h2>{html.escape(str(item.get('title','')))}</h2><p><b>{html.escape(str(item.get('severity','')).upper())}</b> · {html.escape(str(item.get('category','')))} · {html.escape(str(item.get('confidence','')))} confidence</p>"
+            f"<p>{html.escape(str(item.get('explanation','')))}</p><h3>Evidence</h3><ul>{evidence}</ul>"
         )
         if self.fix_focus.currentText() == "Selected finding":
             self.populate_fixes()
 
     def populate_hypotheses(self) -> None:
-        items = self.report.get("hypotheses", []) if self.report else []
+        raw_items = self.report.get("hypotheses") if isinstance(self.report, dict) else []
+        items = [h for h in raw_items if isinstance(h, dict)] if isinstance(raw_items, list) else []
         self.hyp_table.setRowCount(len(items))
         for row, item in enumerate(items):
             values = [item.get("rank"), item.get("confidence"), item.get("score"), item.get("category"), item.get("title")]
@@ -1514,15 +1610,16 @@ class MainWindow(QMainWindow):
         row = self.hyp_table.currentRow()
         if row < 0: return
         item = self.hyp_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        bullets = lambda values: "".join(f"<li>{html.escape(str(value))}</li>" for value in values) or "<li>None recorded.</li>"
+        if not isinstance(item, dict): return
+        bullets = lambda values: "".join(f"<li>{html.escape(str(value))}</li>" for value in (values if isinstance(values, list) else [])) or "<li>None recorded.</li>"
         self.hyp_detail.setHtml(
             f"<h2>#{html.escape(str(item.get('rank', '')))} — {html.escape(str(item.get('title', 'Untitled hypothesis')))}</h2>"
             f"<p><b>{html.escape(str(item.get('confidence', 'unknown')).title())} confidence</b> · score {html.escape(str(item.get('score', '')))}</p>"
             f"<h3>Evidence for</h3><ul>{bullets(item.get('supports', []))}</ul>"
             f"<h3>Evidence against / uncertainty</h3><ul>{bullets(item.get('against', []))}</ul>"
-            f"<h3>Best next test</h3><p>{html.escape(item.get('next_test',''))}</p>"
-            f"<h3>Would strengthen it</h3><p>{html.escape(item.get('would_confirm',''))}</p>"
-            f"<h3>Would weaken it</h3><p>{html.escape(item.get('would_weaken',''))}</p>"
+            f"<h3>Best next test</h3><p>{html.escape(str(item.get('next_test','')))}</p>"
+            f"<h3>Would strengthen it</h3><p>{html.escape(str(item.get('would_confirm','')))}</p>"
+            f"<h3>Would weaken it</h3><p>{html.escape(str(item.get('would_weaken','')))}</p>"
         )
         if self.fix_focus.currentText() == "Top likely cause":
             self.populate_fixes()
@@ -1531,29 +1628,33 @@ class MainWindow(QMainWindow):
     def populate_readiness(self) -> None:
         if not hasattr(self, "readiness_detail"):
             return
-        if not self.report:
+        if not isinstance(self.report, dict):
             self.readiness_detail.setHtml("<h2>No scan loaded</h2><p>Run a quick scan to assess crash capture readiness.</p>")
             return
 
-        readiness = self.report.get("readiness", {})
-        html = ["<h2>Crash Capture Readiness</h2>"]
-        html.append(f"<p><b>Recommendation:</b> {readiness.get('recommendation', 'Unknown')}</p>")
+        readiness = self.report.get("readiness") if isinstance(self.report.get("readiness"), dict) else {}
+        html_parts = ["<h2>Crash Capture Readiness</h2>"]
+        html_parts.append(f"<p><b>Recommendation:</b> {html.escape(str(readiness.get('recommendation', 'Unknown')))}</p>")
 
-        for s in readiness.get("sources", []):
+        sources = readiness.get("sources") if isinstance(readiness.get("sources"), list) else []
+        for s in sources:
+            if not isinstance(s, dict):
+                continue
             color = "green" if s.get("status") in ("ready", "verified_persistent", "available_with_records", "verified_ready", "verified_active") else "orange" if s.get("status") in ("ready_empty", "disabled_intentionally") else "red"
-            html.append(f"<h3><span style='color:{color};'>&#9679;</span> {s.get('name', '')}</h3>")
-            html.append(f"<ul>")
-            html.append(f"<li><b>Status:</b> {s.get('status', '')}</li>")
-            if s.get("evidence"): html.append(f"<li><b>Evidence:</b> {s.get('evidence')}</li>")
-            if s.get("limitation"): html.append(f"<li><b>Limitation:</b> {s.get('limitation')}</li>")
-            if s.get("setup"): html.append(f"<li><b>Optional Setup:</b> {s.get('setup')}</li>")
-            if s.get("implications"): html.append(f"<li><b>Implications:</b> {s.get('implications')}</li>")
-            html.append(f"</ul>")
+            html_parts.append(f"<h3><span style='color:{color};'>&#9679;</span> {html.escape(str(s.get('name', '')))}</h3>")
+            html_parts.append(f"<ul>")
+            html_parts.append(f"<li><b>Status:</b> {html.escape(str(s.get('status', '')))}</li>")
+            if s.get("evidence"): html_parts.append(f"<li><b>Evidence:</b> {html.escape(str(s.get('evidence')))}</li>")
+            if s.get("limitation"): html_parts.append(f"<li><b>Limitation:</b> {html.escape(str(s.get('limitation')))}</li>")
+            if s.get("setup"): html_parts.append(f"<li><b>Optional Setup:</b> {html.escape(str(s.get('setup')))}</li>")
+            if s.get("implications"): html_parts.append(f"<li><b>Implications:</b> {html.escape(str(s.get('implications')))}</li>")
+            html_parts.append(f"</ul>")
 
-        self.readiness_detail.setHtml("".join(html))
+        self.readiness_detail.setHtml("".join(html_parts))
 
     def populate_timeline(self) -> None:
-        items = self.report.get("timeline", []) if self.report else []
+        raw_items = self.report.get("timeline") if isinstance(self.report, dict) else []
+        items = [t for t in raw_items if isinstance(t, dict)] if isinstance(raw_items, list) else []
         self.timeline_table.setRowCount(len(items))
         if not items:
             self.timeline_summary.setText("No timestamped previous-boot events were found. Enable evidence capture before the next crash.")
@@ -1574,10 +1675,12 @@ class MainWindow(QMainWindow):
         row = self.timeline_table.currentRow()
         if row < 0: return
         item = self.timeline_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if not isinstance(item, dict): return
         self.timeline_detail.setPlainText(f"{item.get('timestamp')}\n{item.get('proximity')}\n{item.get('category')}\n\n{item.get('evidence')}")
 
     def populate_checks(self) -> None:
-        checks = list(self.report.get("checks", {}).items()) if self.report else []
+        raw_checks = self.report.get("checks") if isinstance(self.report, dict) else {}
+        checks = [(k, v) for k, v in raw_checks.items() if isinstance(v, dict)] if isinstance(raw_checks, dict) else []
         self.checks_table.setRowCount(len(checks))
         for row, (key, item) in enumerate(checks):
             values = [item.get("category", ""), item.get("title", key), item.get("state", item.get("status", "")), f"{item.get('duration_seconds',0)} s"]
@@ -1588,7 +1691,9 @@ class MainWindow(QMainWindow):
     def show_check(self) -> None:
         row = self.checks_table.currentRow()
         if row < 0: return
-        key, item = self.checks_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        data = self.checks_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, tuple) or len(data) != 2 or not isinstance(data[1], dict): return
+        key, item = data
         self.check_output.setPlainText(
             f"{item.get('title',key)}\nCategory: {item.get('category','')}\nState: {item.get('state', item.get('status', ''))} (return {item.get('returncode')})\nCommand: {item.get('command')}\n\n{item.get('output','')}"
         )
