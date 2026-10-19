@@ -3,7 +3,9 @@ import collector
 import shutil
 
 
-def test_collector_includes_normalized_coredumps_in_report(monkeypatch):
+def test_collector_includes_normalized_coredumps_in_report(monkeypatch, sydney_host_tz):
+    # The boot window below is journalctl text in AEST; the coredump epoch is
+    # 2026-08-31 10:55 AEST, so the host must be on Sydney time to match it.
     import json
     
     # Mock get_systemd_coredumps to return a structured kwin_wayland crash

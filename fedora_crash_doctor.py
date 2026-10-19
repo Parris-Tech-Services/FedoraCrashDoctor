@@ -34,6 +34,52 @@ HELPER = INSTALLED_HELPER if INSTALLED_HELPER.exists() else APP_DIR / "privilege
 VERSION = app_version()
 SEVERITY_ICON = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
 STATUS_ICON = {"new": "NEW", "recurring": "Recurring"}
+CANARY_LOG_PATH = Path("/var/log/fedora-crash-doctor/canary.log")
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _pct(block: Any, key: str) -> str | None:
+    try:
+        return f"{float(_as_dict(block)[key]):.1f}%"
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def summarize_canary_lines(lines: list[str]) -> dict[str, Any]:
+    """Stability Guard summary from canary.log JSON lines.
+
+    The log is written by another process and may be truncated, from an older
+    schema, or hand-edited, so every field is type-checked; lines that are
+    not JSON objects are skipped rather than allowed to break the tab.
+    """
+    summary: dict[str, Any] = {
+        "mem_psi": "Unknown", "io_psi": "Unknown", "warnings": 0, "criticals": 0,
+        "latest_event": None, "latest_recovery": None, "last_warning": None, "latest_sample": {},
+    }
+    for line in lines:
+        try:
+            data = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        summary["latest_sample"] = data
+        summary["mem_psi"] = _pct(data.get("psi_mem"), "some_avg10") or summary["mem_psi"]
+        summary["io_psi"] = _pct(data.get("psi_io"), "full_avg10") or summary["io_psi"]
+        ew = _as_dict(data.get("early_warning"))
+        state = ew.get("state")
+        stamp = ew.get("timestamp")
+        if state in ("warning", "critical"):
+            summary["warnings" if state == "warning" else "criticals"] += 1
+            if stamp is not None:
+                summary["latest_event"] = str(stamp)
+            summary["last_warning"] = ew
+        elif state in ("recovering", "ok") and ew.get("title") == "System recovered" and stamp is not None:
+            summary["latest_recovery"] = str(stamp)
+    return summary
 
 
 class PrivilegeBroker(QObject):
@@ -518,87 +564,65 @@ class MainWindow(QMainWindow):
         heartbeat_active = is_active("fedora-crash-doctor-desktop-heartbeat.service", user=True)
         notifier_active = is_active("fedora-crash-doctor-stability.path", user=True)
 
-        log_path = Path("/var/log/fedora-crash-doctor/canary.log")
-
-        current_mem_psi = "Unknown"
-        current_io_psi = "Unknown"
-
-        warnings = 0
-        criticals = 0
-        latest_event = "None"
-        latest_recovery = "None"
-        last_warning = None
-        latest_sample = {}
-
-        if log_path.exists():
+        lines: list[str] = []
+        if CANARY_LOG_PATH.exists():
             try:
-                with open(log_path, "r", encoding="utf-8") as f:
+                with open(CANARY_LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
                     f.seek(0, 2)
                     size = f.tell()
                     f.seek(max(0, size - 1000000))
                     lines = f.readlines()
+            except OSError:
+                lines = []
+        summary = summarize_canary_lines(lines)
+        latest_sample = summary["latest_sample"]
+        chrome = _as_dict(latest_sample.get("chrome"))
+        memory = _as_dict(latest_sample.get("memory"))
+        early_warning = _as_dict(latest_sample.get("early_warning"))
 
-                for line in lines:
-                    try:
-                        import json
-                        data = json.loads(line)
-                        latest_sample = data
-                        if "psi_mem" in data:
-                            current_mem_psi = f"{data['psi_mem'].get('some_avg10', 0):.1f}%"
-                        if "psi_io" in data:
-                            current_io_psi = f"{data['psi_io'].get('full_avg10', 0):.1f}%"
+        def esc(value: Any) -> str:
+            return html.escape(str(value))
 
-                        ew = data.get("early_warning")
-                        if ew:
-                            state = ew.get("state")
-                            if state == "warning":
-                                warnings += 1
-                                latest_event = ew.get("timestamp", latest_event)
-                                last_warning = ew
-                            elif state == "critical":
-                                criticals += 1
-                                latest_event = ew.get("timestamp", latest_event)
-                                last_warning = ew
-                            elif state in ("recovering", "ok"):
-                                if ew.get("title") == "System recovered":
-                                    latest_recovery = ew.get("timestamp", latest_recovery)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+        def active(flag: bool) -> str:
+            return "Active" if flag else "Inactive"
 
         html_out = [
             "<h2>Current protection</h2>",
-            f"<ul>",
-            f"<li><b>Stability Guard:</b> {'Active' if notifier_active else 'Inactive'}</li>",
-            f"<li><b>Canary:</b> {'Active' if canary_active else 'Inactive'}</li>",
-            f"<li><b>Desktop heartbeat:</b> {'Active' if heartbeat_active else 'Inactive'}</li>",
-            f"<li><b>systemd-oomd:</b> {'Active' if oomd_active else 'Inactive'}</li>",
-            f"<li><b>Current memory pressure:</b> {current_mem_psi}</li>",
-            f"<li><b>Current I/O pressure:</b> {current_io_psi}</li>",
-            f"<li><b>Health state:</b> {str((latest_sample.get('early_warning') or {}).get('health_state', 'NORMAL'))}</li>",
-            f"<li><b>KWin latency:</b> {latest_sample.get('kwin_ping_ms', 'Unknown')} ms</li>",
-            f"<li><b>Chrome:</b> {(latest_sample.get('chrome') or {}).get('aggregate_rss_mb', 'Unknown')} MB aggregate RSS</li>",
-            f"<li><b>Chrome processes:</b> {(latest_sample.get('chrome') or {}).get('process_count', 'Unknown')}</li>",
-            f"<li><b>Swap:</b> {(latest_sample.get('memory') or {}).get('swap_used_mb', 'Unknown')} / {(latest_sample.get('memory') or {}).get('swap_total_mb', 'Unknown')} MB</li>",
+            "<ul>",
+            f"<li><b>Stability Guard:</b> {active(notifier_active)}</li>",
+            f"<li><b>Canary:</b> {active(canary_active)}</li>",
+            f"<li><b>Desktop heartbeat:</b> {active(heartbeat_active)}</li>",
+            f"<li><b>systemd-oomd:</b> {active(oomd_active)}</li>",
+            f"<li><b>Current memory pressure:</b> {esc(summary['mem_psi'])}</li>",
+            f"<li><b>Current I/O pressure:</b> {esc(summary['io_psi'])}</li>",
+            f"<li><b>Health state:</b> {esc(early_warning.get('health_state', 'NORMAL'))}</li>",
+            f"<li><b>KWin latency:</b> {esc(latest_sample.get('kwin_ping_ms') if latest_sample.get('kwin_ping_ms') is not None else 'Unknown')} ms</li>",
+            f"<li><b>Chrome:</b> {esc(chrome.get('aggregate_rss_mb', 'Unknown'))} MB aggregate RSS</li>",
+            f"<li><b>Chrome processes:</b> {esc(chrome.get('process_count', 'Unknown'))}</li>",
+            f"<li><b>Swap:</b> {esc(memory.get('swap_used_mb', 'Unknown'))} / {esc(memory.get('swap_total_mb', 'Unknown'))} MB</li>",
             "</ul>",
         ]
 
+        last_warning = summary["last_warning"]
+        latest_event = summary["latest_event"]
+        latest_recovery = summary["latest_recovery"]
         if last_warning:
+            offenders = last_warning.get("likely_offenders")
+            offenders = offenders if isinstance(offenders, list) else []
             html_out.append("<h2>Recent warning</h2>")
-            html_out.append(f"<p><b>Last warning:</b> {last_warning.get('timestamp')}</p>")
-            html_out.append(f"<p><b>Severity:</b> {str(last_warning.get('state', '')).capitalize()}</p>")
-            html_out.append(f"<p><b>Reason:</b> {last_warning.get('title')}</p>")
-            html_out.append(f"<p><b>Largest workload:</b> {', '.join(last_warning.get('likely_offenders', []))}</p>")
-            recovered = "Yes" if latest_recovery != "None" and latest_recovery > latest_event else "No"
+            html_out.append(f"<p><b>Last warning:</b> {esc(last_warning.get('timestamp'))}</p>")
+            html_out.append(f"<p><b>Severity:</b> {esc(str(last_warning.get('state', '')).capitalize())}</p>")
+            html_out.append(f"<p><b>Reason:</b> {esc(last_warning.get('title'))}</p>")
+            html_out.append(f"<p><b>Largest workload:</b> {esc(', '.join(str(o) for o in offenders))}</p>")
+            recovered = "Yes" if latest_recovery and latest_event and latest_recovery > latest_event else "No"
             html_out.append(f"<p><b>Recovered:</b> {recovered}</p>")
 
         html_out.append("<h2>History</h2>")
         html_out.append("<ul>")
-        html_out.append(f"<li><b>Number of warnings:</b> {warnings}</li>")
-        html_out.append(f"<li><b>Number of critical events:</b> {criticals}</li>")
-        html_out.append(f"<li><b>Latest event:</b> {latest_event}</li>")
-        html_out.append(f"<li><b>Latest recovery:</b> {latest_recovery}</li>")
+        html_out.append(f"<li><b>Number of warnings:</b> {summary['warnings']}</li>")
+        html_out.append(f"<li><b>Number of critical events:</b> {summary['criticals']}</li>")
+        html_out.append(f"<li><b>Latest event:</b> {esc(latest_event or 'None')}</li>")
+        html_out.append(f"<li><b>Latest recovery:</b> {esc(latest_recovery or 'None')}</li>")
         html_out.append("</ul>")
 
         self.stability_guard_detail.setHtml("".join(html_out))
@@ -654,8 +678,10 @@ class MainWindow(QMainWindow):
         show_out = sh(["btrfs", "filesystem", "show", "--raw", "/"])
         expand_needed = False
         import re
-        match = re.search(r"devid\s+\d+\s+size\s+(\d+)\s+.*path\s+(\S+)", show_out)
-        if match:
+        match = re.search(r"devid\s+\d+\s+size\s+(\d+)\s+.*path\s+(\S+)(.*)", show_out)
+        # Unprivileged, btrfs reports "size 0 ... MISSING": the size is unknown,
+        # not zero, so it must not be read as an expandable filesystem.
+        if match and int(match.group(1)) > 0 and "MISSING" not in match.group(3):
             fs_size = int(match.group(1))
             path = match.group(2)
             lsblk_out = sh(["lsblk", "-b", "-n", "-o", "SIZE", path])
@@ -679,11 +705,11 @@ class MainWindow(QMainWindow):
 
         html_out = [
             "<h2>Memory Pressure</h2>",
-            "<pre><b>RAM (free -h):</b>\\n" + html.escape(free_out) + "</pre>",
-            "<pre><b>ZRAM (zramctl):</b>\\n" + html.escape(zram_out) + "</pre>",
-            "<pre><b>Disk Swap (swapon):</b>\\n" + html.escape(swapon_out) + "</pre>",
-            "<pre><b>Memory Pressure (PSI):</b>\\n" + html.escape(psi_mem) + "</pre>",
-            "<pre><b>OOMD State:</b>\\n" + html.escape(oomctl_out) + "</pre>",
+            "<pre><b>RAM (free -h):</b>\n" + html.escape(free_out) + "</pre>",
+            "<pre><b>ZRAM (zramctl):</b>\n" + html.escape(zram_out) + "</pre>",
+            "<pre><b>Disk Swap (swapon):</b>\n" + html.escape(swapon_out) + "</pre>",
+            "<pre><b>Memory Pressure (PSI):</b>\n" + html.escape(psi_mem) + "</pre>",
+            "<pre><b>OOMD State:</b>\n" + html.escape(oomctl_out) + "</pre>",
         ]
 
         import memory_oom

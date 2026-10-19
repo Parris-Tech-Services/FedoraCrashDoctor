@@ -47,12 +47,24 @@ EXPECTED_DATADIR_ENTRY_POINTS = {
 
 
 def _tracked_root_py_stems() -> set[str]:
-    out = subprocess.run(
-        ["git", "ls-files", "--", "*.py"],
-        cwd=ROOT, capture_output=True, text=True, check=True,
-    )
+    """Root-level first-party modules.
+
+    From a git checkout this is the tracked set, so stray scratch files are
+    ignored. A release tarball or rpmbuild tree has no git metadata; there
+    the files present *are* the shipped source, so every root *.py counts.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--", "*.py"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        )
+        lines = out.stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        lines = []
+    if not lines:
+        lines = [p.name for p in ROOT.glob("*.py")]
     stems = set()
-    for line in out.stdout.splitlines():
+    for line in lines:
         if "/" not in line:
             stems.add(line[:-3])
     return stems

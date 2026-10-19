@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+import pytest
+
 from manual_incident_marker import (
     build_manual_scan_report,
     mark_incident,
@@ -71,6 +73,7 @@ class TestMarkIncident:
         assert incident["boot_id"] == "unknown"
         assert incident["evidence_completeness"]["canary_telemetry"] == "not_collected"
 
+    @pytest.mark.usefixtures("sydney_host_tz")
     def test_canary_evidence_is_attached_when_samples_fall_in_window(self):
         at = datetime(2026, 9, 10, 22, 0, 0)
         samples = [_sample("2026-09-10T21:55:00+10:00")]

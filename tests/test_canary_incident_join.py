@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from canary_incident_join import attach_canary_evidence, heartbeat_continuity, samples_in_window
+
+# Incident windows below are naive Sydney-local times (AEST, +10:00 in September).
+pytestmark = pytest.mark.usefixtures("sydney_host_tz")
 
 
 def _sample(ts, heartbeat_age=5, kwin_ok=True):
@@ -50,6 +55,21 @@ class TestSamplesInWindow:
         end = (local_ts + timedelta(minutes=5)).isoformat()
         matched = samples_in_window([_sample(sample_ts)], start, end)
         assert len(matched) == 1
+
+    @pytest.mark.parametrize(
+        "zone, window_start, window_end",
+        [
+            ("UTC", "2026-09-09T23:45:00", "2026-09-10T00:01:00"),
+            ("America/Los_Angeles", "2026-09-09T16:45:00", "2026-09-09T17:01:00"),
+        ],
+    )
+    def test_window_follows_the_host_timezone_not_the_sample_offset(self, host_tz, zone, window_start, window_end):
+        """The same +10:00 sample lands in a window written in whatever zone
+        the host is in, and the Sydney-local window no longer matches."""
+        host_tz(zone)
+        samples = [_sample("2026-09-10T09:50:00+10:00")]
+        assert len(samples_in_window(samples, window_start, window_end)) == 1
+        assert samples_in_window(samples, "2026-09-10T09:45:00", "2026-09-10T10:01:00") == []
 
     def test_malformed_window_returns_empty(self):
         assert samples_in_window([_sample("2026-09-10T09:50:00+10:00")], "not-a-date", "also-not-a-date") == []

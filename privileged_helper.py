@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,9 @@ SYSTEMD_DIR = Path("/usr/lib/systemd/system")
 USER_SYSTEMD_DIR = Path("/usr/lib/systemd/user")
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 MAX_REQUEST = 64 * 1024
+# Root work runs on background threads; bound how much can be queued at once.
+MAX_ACTIVE_TASKS = 4
+MAX_REQUEST_ID = 80
 
 
 def safe_env() -> dict[str, str]:
@@ -56,9 +60,15 @@ def invoker() -> tuple[int, int, str, str]:
     return uid, entry.pw_gid, entry.pw_dir, entry.pw_name
 
 
+_send_lock = threading.Lock()
+
+
 def send(payload: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n"
+    # Worker threads report concurrently; one lock keeps each JSON line whole.
+    with _send_lock:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def child_parent_death_signal() -> None:
@@ -472,18 +482,72 @@ def dispatch(req: dict[str, Any], uid: int, gid: int, home: str, request_id: str
     raise ValueError("Action is not allowed")
 
 
-import threading
+active_tasks: dict[str, dict[str, Any]] = {}
+_tasks_lock = threading.Lock()
 
-active_tasks = {}
+
+def _request_id(value: Any) -> str:
+    return str(value if value is not None else "")[:MAX_REQUEST_ID]
+
 
 def _dispatch_thread(req: dict[str, Any], uid: int, gid: int, home: str, request_id: str):
+    state = req["state"]
     try:
         data = dispatch(req, uid, gid, home, request_id)
         send({"type": "result", "id": request_id, "ok": True, "data": data})
     except Exception as exc:
         send({"type": "result", "id": request_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
     finally:
-        active_tasks.pop(request_id, None)
+        with _tasks_lock:
+            if active_tasks.get(request_id) is state:
+                del active_tasks[request_id]
+
+
+def handle_request_line(raw: str, uid: int, gid: int, home: str) -> threading.Thread | None:
+    """Validate one JSON request line and start its worker thread.
+
+    Returns the started thread, or None when the line was answered (or
+    ignored) without starting work.
+    """
+    if len(raw) > MAX_REQUEST:
+        send({"type": "error", "id": None, "error": "Request too large"})
+        return None
+    request_id = ""
+    try:
+        req = json.loads(raw)
+        if not isinstance(req, dict):
+            raise ValueError("Request must be an object")
+
+        if req.get("action") == "cancel":
+            target_id = _request_id(req.get("target_id"))
+            with _tasks_lock:
+                task = active_tasks.get(target_id)
+                if task:
+                    task["cancel_flag"] = True
+            # Not a "result": the GUI would treat that as the target's answer.
+            send({"type": "cancel_ack", "target_id": target_id, "found": bool(task)})
+            return None
+
+        request_id = _request_id(req.get("id"))
+        if not request_id:
+            raise ValueError("Request id required")
+
+        state = {"cancel_flag": False}
+        req["state"] = state
+        with _tasks_lock:
+            if request_id in active_tasks:
+                raise ValueError("Request id is already active")
+            if len(active_tasks) >= MAX_ACTIVE_TASKS:
+                raise RuntimeError("Too many privileged actions are already running")
+            active_tasks[request_id] = state
+
+        t = threading.Thread(target=_dispatch_thread, args=(req, uid, gid, home, request_id), daemon=True)
+        t.start()
+        return t
+    except Exception as exc:
+        send({"type": "result", "id": request_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        return None
+
 
 def broker() -> int:
     if os.geteuid() != 0:
@@ -495,34 +559,7 @@ def broker() -> int:
     os.chmod(STATE_DIR, 0o755)
     send({"type": "ready", "uid": uid, "username": username, "version": app_version()})
     for raw in sys.stdin:
-        if len(raw) > MAX_REQUEST:
-            send({"type": "error", "id": None, "error": "Request too large"})
-            continue
-        try:
-            req = json.loads(raw)
-            if not isinstance(req, dict):
-                raise ValueError("Request must be an object")
-            
-            action = req.get("action")
-            if action == "cancel":
-                target_id = req.get("target_id")
-                task = active_tasks.get(target_id)
-                if task:
-                    task["cancel_flag"] = True
-                continue
-                
-            request_id = str(req.get("id", ""))[:80]
-            if not request_id:
-                raise ValueError("Request id required")
-                
-            state = {"cancel_flag": False}
-            req["state"] = state
-            active_tasks[request_id] = state
-            
-            t = threading.Thread(target=_dispatch_thread, args=(req, uid, gid, home, request_id), daemon=True)
-            t.start()
-        except Exception as exc:
-            send({"type": "result", "id": str(locals().get("request_id", "")), "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        handle_request_line(raw, uid, gid, home)
     return 0
 
 
