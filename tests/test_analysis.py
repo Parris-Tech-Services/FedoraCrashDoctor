@@ -43,7 +43,8 @@ class AnalysisTests(unittest.TestCase):
         incidents, warnings, unresolved = build_incidents(findings, checks)
 
         overall, hyps = build_overall(incidents, warnings)
-        self.assertEqual(overall["title"], "Recurring stability warnings remain")
+        self.assertEqual(overall["title"], "Historical warnings found")
+        self.assertIn("not evidence of a current fault", overall["summary"])
 
     def test_pcie_address_anywhere_is_mapped_to_device(self):
         pci = """0000:02:00.0 Network controller [0280]: Realtek Semiconductor Co., Ltd. RTL8821CE [10ec:c821]\n\tKernel driver in use: rtw88_8821ce\n"""

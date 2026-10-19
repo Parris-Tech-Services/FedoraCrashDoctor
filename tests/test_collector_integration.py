@@ -97,3 +97,27 @@ def test_collect_attaches_explainable_confidence_to_every_incident(monkeypatch):
         assert "mechanism" in explanations[0]
         assert "missing_evidence" in explanations[0]
         assert explanations[0]["recurrence_context"] is None  # single-scan collect() has no history
+
+
+def test_analyse_identifies_node_heap_abort_and_coredump_storm():
+    checks = {
+        "coredumps_json": {"structured_evidence": [
+            {"executable": "/home/josh/.local/bin/node", "command": "next-server", "signal_name": "SIGABRT", "pid": 10, "timestamp": 1},
+            {"executable": "/home/josh/.local/bin/node", "command": "next-server FatalProcessOutOfMemory", "signal_name": "SIGABRT", "pid": 11, "timestamp": 2},
+        ]},
+    }
+    findings, _ = collector.analyse(checks)
+    ids = {finding["id"] for finding in findings}
+    assert "node_heap_crash" in ids
+    assert "coredump_storm" in ids
+
+
+def test_tail_files_preserves_rotated_canary_order(tmp_path):
+    paths = []
+    for suffix, text in ((".3", "old"), (".2", "middle"), (".1", "newer"), ("", "active")):
+        path = tmp_path / f"canary.log{suffix}"
+        path.write_text(text)
+        paths.append(path)
+
+    output = collector.tail_files(paths, 1200)
+    assert output.index("old") < output.index("middle") < output.index("newer") < output.index("active")

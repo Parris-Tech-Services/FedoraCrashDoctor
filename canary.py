@@ -143,6 +143,14 @@ def zram_stats() -> dict[str, dict[str, int]]:
 def gather_processes() -> dict[str, Any]:
     processes = []
     blocked = []
+    mem_total_kb = 0
+    for line in read_text("/proc/meminfo").splitlines():
+        if line.startswith("MemTotal:"):
+            try:
+                mem_total_kb = int(line.split()[1])
+            except (IndexError, ValueError):
+                pass
+            break
     for pid_str in os.listdir("/proc"):
         if not pid_str.isdigit():
             continue
@@ -190,10 +198,16 @@ def gather_processes() -> dict[str, Any]:
             elif "java" in cmd_lower: group = "Java"
             elif "electron" in cmd_lower: group = "Electron App"
 
+            cgroup = read_text(f"/proc/{pid}/cgroup")
+            oom_score = read_text(f"/proc/{pid}/oom_score")
+
             processes.append({
                 "pid": pid, "ppid": ppid, "name": name, "cmd": cmdline[:100],
                 "rss_kb": rss, "swap_kb": swap, "anon_kb": anon, "file_kb": file_mem,
-                "state": state, "threads": threads, "group": group
+                "rss_percent": round((rss / mem_total_kb) * 100, 1) if mem_total_kb else None,
+                "state": state, "threads": threads, "group": group,
+                "cgroup": cgroup[:240],
+                "oom_score": int(oom_score) if oom_score.isdigit() else None,
             })
         except Exception:
             pass
@@ -288,7 +302,7 @@ def chrome_summary() -> dict[str, Any]:
 
 
 def recent_journal_events() -> dict[str, str]:
-    result = {"graphics": "", "storage": "", "kernel": ""}
+    result = {"graphics": "", "storage": "", "coredump": "", "kernel": ""}
     try:
         output = subprocess.run(
             ["journalctl", "-k", "-b", "0", "--since=-60 seconds", "--output=short-iso-precise", "--no-pager"],
@@ -297,6 +311,7 @@ def recent_journal_events() -> dict[str, str]:
         result["kernel"] = output
         result["graphics"] = "\n".join(line for line in output.splitlines() if re.search(r"i915|drm|GPU HANG|GPU reset|atomic update failure", line, re.I))
         result["storage"] = "\n".join(line for line in output.splitlines() if re.search(r"I/O error|Buffer I/O|nvme.*error|ata.*link down|btrfs.*error", line, re.I))
+        result["coredump"] = "\n".join(line for line in output.splitlines() if re.search(r"systemd-coredump|dumped core|FatalProcessOutOfMemory|out of memory", line, re.I))
     except Exception:
         pass
     return result

@@ -179,6 +179,11 @@ def get_systemd_coredumps(since: str = "30 days ago", max_records: int = 1000, m
     except Exception:
         if 'proc' in locals():
             proc.kill()
-    
-    return incidents
+    finally:
+        if 'proc' in locals() and proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
 
+    return incidents

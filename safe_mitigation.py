@@ -33,13 +33,62 @@ def evaluate_sample(sample: dict[str, Any]) -> dict[str, Any]:
     kwin_ok = sample.get("kwin_ok")
     plasma_ok = sample.get("plasmashell_ok")
     journal_events = sample.get("journal_events") or {}
+    coredump_value = journal_events.get("coredump") or ""
+    coredump_lines = coredump_value.splitlines() if isinstance(coredump_value, str) else list(coredump_value)
+
+    # A single runaway process can exhaust the machine before systemd-oomd
+    # reaches its cgroup threshold.  Keep this evidence-based: process RSS is
+    # only promoted when pressure or swap use is already elevated, and the
+    # warning explicitly names the observed workload without claiming that it
+    # is a leak or the sole cause.
+    top_rss = (sample.get("processes") or {}).get("top_rss") or []
+    largest = top_rss[0] if top_rss else {}
+    largest_rss_mb = float(largest.get("rss_kb") or 0) / 1024
+    largest_name = str(largest.get("name") or largest.get("group") or "workload")
+    largest_group = str(largest.get("group") or largest_name)
+    largest_share = largest_rss_mb / mem_total if mem_total else 0.0
 
     severity = "ok"
     category = "healthy"
     title = "System healthy"
     reasons = []
 
-    if mem_avail_pct < 0.08 and swap_used_pct > 0.85 and mem_some >= 20 and io_full >= 20:
+    if len(coredump_lines) >= 3 and (mem_some >= 10 or io_full >= 15 or swap_used_pct > 0.60):
+        severity = "critical"
+        category = "memory"
+        title = "Coredump storm is adding pressure"
+        reasons = [
+            f"{len(coredump_lines)} coredump events were recorded in the recent window.",
+            "Coredump processing can consume substantial memory and I/O while the desktop is already under pressure.",
+        ]
+    elif (
+        largest_rss_mb >= max(2048, mem_total * 0.40)
+        and largest_share >= 0.40
+        and (mem_some >= 15 or io_full >= 20 or swap_used_pct > 0.70)
+    ):
+        severity = "critical"
+        category = "memory"
+        title = f"One workload is consuming {int(largest_rss_mb)} MB RAM"
+        reasons = [
+            f"Largest workload: {largest_group} ({int(largest_rss_mb)} MB RSS).",
+            f"That process uses about {int(largest_share * 100)}% of physical RAM.",
+            f"Available RAM: {int(mem_available)} MB; swap: {int(swap_used_pct * 100)}% used.",
+            "Memory or I/O pressure is already elevated.",
+        ]
+    elif (
+        largest_rss_mb >= max(2048, mem_total * 0.25)
+        and largest_share >= 0.25
+        and (mem_some >= 10 or io_full >= 15 or swap_used_pct > 0.60)
+    ):
+        severity = "warning"
+        category = "memory"
+        title = f"A single workload is using {int(largest_rss_mb)} MB RAM"
+        reasons = [
+            f"Largest workload: {largest_group} ({int(largest_rss_mb)} MB RSS).",
+            f"That process uses about {int(largest_share * 100)}% of physical RAM.",
+            "Memory or I/O pressure is rising; this workload may be driving swap thrash.",
+        ]
+    elif mem_avail_pct < 0.08 and swap_used_pct > 0.85 and mem_some >= 20 and io_full >= 20:
         severity = "critical"
         category = "memory"
         title = f"Memory pressure is critical \u2014 swap is {int(swap_used_pct * 100)}% full."
@@ -108,9 +157,11 @@ def evaluate_sample(sample: dict[str, Any]) -> dict[str, Any]:
     actions = []
     if severity == "warning" and category == "memory":
         actions.append("The desktop is still responsive.")
-        actions.append("Closing an unneeded heavy application now may prevent a freeze.")
+        actions.append(f"Save work, then stop or restart the heavy {largest_name} workload before swap thrash worsens.")
     elif severity == "critical" and category == "memory":
-        actions.append("Save important work or close heavy background applications.")
+        actions.append(f"Save important work immediately, then stop or restart {largest_name} before the desktop freezes.")
+        if coredump_lines:
+            actions.append("Leave crash capture enabled, but avoid opening graphical crash reports until pressure subsides.")
     
     plasma_recovery = None
     if plasma_ok is False and kwin_ok is True:

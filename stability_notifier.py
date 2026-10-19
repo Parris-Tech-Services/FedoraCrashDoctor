@@ -7,14 +7,25 @@ a desktop notification using notify-send.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 EVENT_FILE = Path("/run/fedora-crash-doctor/stability-event.json")
+SILENT_MARKERS = (
+    Path("/etc/fedora-crash-doctor/silent"),
+    Path.home() / ".config/fedora-crash-doctor/silent",
+)
 
 def main() -> int:
     if not EVENT_FILE.exists():
+        return 0
+
+    # Keep the canary and event file active while allowing kiosk/headless
+    # machines, or users who are already suppressing DrKonqi, to opt out of
+    # desktop popups without disabling evidence collection.
+    if os.environ.get("FCD_SILENT", "").lower() in {"1", "true", "yes", "on"} or any(path.exists() for path in SILENT_MARKERS):
         return 0
 
     try:

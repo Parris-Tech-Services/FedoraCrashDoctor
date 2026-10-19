@@ -1115,6 +1115,9 @@ class MainWindow(QMainWindow):
         self.comparison_label.setWordWrap(True)
         self.comparison_label.setStyleSheet("font-weight: 650;")
         layout.addWidget(self.comparison_label)
+        self.reliability_label = QLabel("Observed stability index will appear after at least two saved scans.")
+        self.reliability_label.setWordWrap(True)
+        layout.addWidget(self.reliability_label)
         self.trend_chart = TrendChart(); layout.addWidget(self.trend_chart)
         canary_title = QLabel("Current report: CPU, memory and I/O PSI pressure (avg10)")
         canary_title.setStyleSheet("font-weight: 650;")
@@ -1477,6 +1480,7 @@ class MainWindow(QMainWindow):
             return
         self.report = data
         self._attach_incident_recurrence(self.report)
+        self._attach_reliability_summary(self.report)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = self.report_dir / f"scan-{stamp}.json"
         path.write_text(json.dumps(self.report, indent=2, ensure_ascii=False))
@@ -1508,6 +1512,30 @@ class MainWindow(QMainWindow):
             report["incident_families"] = [f.to_dict() for f in families if f.count > 1]
         except Exception as exc:
             self.set_status(f"Recurrence tracking unavailable this scan: {exc}")
+
+    def _load_saved_scan_reports(self) -> list[dict[str, Any]]:
+        reports = []
+        for path in sorted(self.report_dir.glob("scan-*.json"))[-200:]:
+            try:
+                if path.stat().st_size > 20 * 1024 * 1024:
+                    continue
+                data = json.loads(path.read_text())
+            except (OSError, ValueError, TypeError):
+                continue
+            if isinstance(data, dict):
+                reports.append(data)
+        return reports
+
+    def _attach_reliability_summary(self, report: dict[str, Any]) -> None:
+        """Attach a transparent summary without changing diagnosis or host state."""
+        try:
+            from reliability_summary import build_reliability_summary
+
+            reports = self._load_saved_scan_reports()
+            reports.append(report)
+            report["reliability_summary"] = build_reliability_summary(reports)
+        except Exception as exc:
+            self.set_status(f"Reliability summary unavailable this scan: {exc}")
 
     def load_report(self) -> None:
         if self.report is None or not isinstance(self.report, dict):
@@ -1787,6 +1815,7 @@ class MainWindow(QMainWindow):
         if not path.exists(): return
         try:
             data = json.loads(path.read_text())
+            self._attach_reliability_summary(data)
             saved = self.report_dir / f"scan-autoscan-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
             saved.write_text(json.dumps(data, indent=2, ensure_ascii=False))
             path.unlink(missing_ok=True)
@@ -1797,13 +1826,23 @@ class MainWindow(QMainWindow):
             self.set_status(f"Could not load pending autoscan: {exc}")
 
     def refresh_trends(self) -> None:
-        rows = []
-        for path in sorted(self.report_dir.glob("scan-*.json")):
-            try:
-                data = json.loads(path.read_text())
-            except Exception:
-                continue
-            rows.append(data)
+        rows = self._load_saved_scan_reports()
+        from reliability_summary import build_reliability_summary
+        reliability = build_reliability_summary(rows)
+        if reliability["score"] is None:
+            self.reliability_label.setText(
+                f"Observed stability index: insufficient data ({reliability['reports']} dated scan(s)); "
+                "two or more scans are required."
+            )
+        else:
+            coverage = reliability["coverage"]
+            self.reliability_label.setText(
+                f"Observed stability index: {reliability['score']}/100 — "
+                f"{reliability['incidents']} incident(s), "
+                f"canary coverage {coverage['canary_fraction']:.0%}, "
+                f"persistent-journal coverage {coverage['persistent_journal_fraction']:.0%}. "
+                "This summarizes recorded evidence; it is not a hardware-health guarantee."
+            )
         self.trends_table.setRowCount(len(rows))
         critical, warning, info = [], [], []
         for row, data in enumerate(rows):

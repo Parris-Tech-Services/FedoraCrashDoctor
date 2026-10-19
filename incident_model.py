@@ -194,12 +194,12 @@ def evidence_completeness(incident: dict[str, Any], checks: dict[str, Any] | Non
     """Per-source evidence state, using EVIDENCE_STATES rather than a bare
     boolean, so "no data" is never conflated with "checked and healthy".
 
-    journal/coredump reflect this module's only two current evidence
-    inputs. canary_telemetry/desktop_heartbeat/user_observations are always
-    'not_collected' today: build_incidents() does not yet receive canary
-    samples, desktop-heartbeat samples, or user-reported observations to
-    join onto an incident at all (later mission sections). That is recorded
-    explicitly rather than left to read as "healthy".
+    journal/coredump reflect this module's direct evidence inputs. Canary and
+    desktop-heartbeat evidence is initially marked 'not_collected' here and
+    is updated to complete/unavailable by the post-boundary telemetry join
+    when a scan has samples. User observations remain a separate optional
+    source. These states are explicit so missing data is never read as
+    "healthy".
     """
     checks = checks or {}
 

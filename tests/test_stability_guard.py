@@ -28,6 +28,28 @@ class StabilityGuardTests(unittest.TestCase):
         sample = self._mem_sample(700, total_mb=16000, swap_used=0, some_psi=0, io_full=0)
         self.assertNotEqual(self.controller.process_sample(sample), "critical")
 
+    def test_runaway_single_workload_escalates_under_pressure(self):
+        sample = self._mem_sample(3500, total_mb=16000, swap_used=6000, some_psi=20, io_full=25)
+        sample["processes"] = {
+            "top_rss": [{"name": "next-server", "group": "Other", "rss_kb": 7_500_000}]
+        }
+        result = self.controller.process_sample(sample)
+        self.assertIsNone(result)  # first sample is debounced
+        result = self.controller.process_sample(sample)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["state"], "critical")
+        self.assertIn("next-server", " ".join(result["recommended_actions"]))
+
+    def test_coredump_storm_escalates_under_pressure(self):
+        sample = self._mem_sample(2500, total_mb=16000, swap_used=6000, some_psi=15, io_full=20)
+        sample["journal_events"] = {"coredump": ["core dumped"] * 3}
+        result = self.controller.process_sample(sample)
+        self.assertIsNone(result)
+        result = self.controller.process_sample(sample)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["state"], "critical")
+        self.assertIn("Coredump storm", result["title"])
+
     def test_normal_zram_use_is_not_memory_failure(self):
         sample = self._mem_sample(8000, swap_used=2000, some_psi=0, io_full=0)
         self.assertIsNone(self.controller.process_sample(sample))

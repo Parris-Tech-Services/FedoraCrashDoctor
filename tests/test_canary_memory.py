@@ -58,6 +58,10 @@ class TestCanaryMemory(unittest.TestCase):
             self.assertIn("Antigravity", groups)
             self.assertEqual(groups["Antigravity"]["rss_kb"], 512000)
             self.assertEqual(groups["Antigravity"]["swap_kb"], 0)
+
+            process = next(item for item in res["top_rss"] if item["name"] == "chrome")
+            self.assertIn("rss_percent", process)
+            self.assertIn("oom_score", process)
             
     def test_vmstat_parsing(self):
         with patch("canary.read_text", return_value="pgscan_kswapd 100\npswpin 50\nother 999"):

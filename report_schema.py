@@ -66,7 +66,7 @@ def validate_report(report: dict[str, Any], allow_future_fields: bool = True) ->
 
     for key in ("generated", "mode", "version"):
         _require(key in report["metadata"], f"metadata.{key} is required")
-    _require(report["metadata"]["mode"] in {"quick", "full", "deep"}, "metadata.mode is invalid")
+    _require(report["metadata"]["mode"] in {"quick", "full", "deep", "manual-mark"}, "metadata.mode is invalid")
 
     for key in ("critical", "warning", "info"):
         _require(isinstance(report["counts"].get(key), int), f"counts.{key} must be an integer")

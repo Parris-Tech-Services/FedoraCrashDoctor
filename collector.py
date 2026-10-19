@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from canary_incident_join import attach_canary_evidence
 from confidence_explanation import explain_incident
 from device_inventory import attribute_log_line, parse_lsblk_json
 from freeze_classifiers import classify_freeze_evidence
@@ -409,17 +410,19 @@ def add_virtual_checks(checks: dict[str, Any]) -> None:
         "output": "\n".join(pstore_chunks) if pstore_chunks else "No pstore crash records found.",
     }
     canary = Path("/var/log/fedora-crash-doctor/canary.log")
+    canary_paths = [canary.with_name(f"{canary.name}.{index}") for index in range(3, 0, -1)] + [canary]
+    available_canary_paths = [path for path in canary_paths if path.exists()]
     checks["canary_log"] = {
         "title": "System canary snapshots",
         "category": "Software",
         "command": f"read {canary}",
-        "status": "ok" if canary.exists() else "not_available",
-        "state": "completed" if canary.exists() else "unavailable",
+        "status": "ok" if available_canary_paths else "not_available",
+        "state": "completed" if available_canary_paths else "unavailable",
         "returncode": 0,
         "duration_seconds": 0,
         "timeout_seconds": 0,
         "privilege": "root-or-current-user",
-        "output": tail_file(canary, 1200) if canary.exists() else "System canary is not enabled.",
+        "output": tail_files(available_canary_paths, 1200) if available_canary_paths else "System canary is not enabled.",
     }
 
 
@@ -429,6 +432,16 @@ def tail_file(path: Path, lines: int) -> str:
         return "\n".join(data[-lines:])
     except Exception as exc:
         return f"Unable to read {path}: {exc}"
+
+
+def tail_files(paths: list[Path], lines: int) -> str:
+    """Read bounded tails in chronological rotation order."""
+    chunks = []
+    for path in paths:
+        text = tail_file(path, lines)
+        if text:
+            chunks.append(f"--- {path} ---\n{text}")
+    return "\n".join(chunks)
 
 
 def evidence_lines(text: str, pattern: str, limit: int = 10) -> list[str]:
@@ -510,6 +523,44 @@ def analyse(checks: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any
             scope = "historical"
         if lines:
             findings.append(_make_finding(fid, severity, category, title, explanation, lines, scope, confidence))
+
+    # Structured coredump records are often more precise than journal text.
+    # Surface repeated application crashes and Node heap failures as distinct
+    # evidence so a memory-thrashing incident is not flattened into a generic
+    # "application crashed" finding.
+    structured_cores = checks.get("coredumps_json", {}).get("structured_evidence", [])
+    by_executable: dict[str, list[dict[str, Any]]] = {}
+    for core in structured_cores if isinstance(structured_cores, list) else []:
+        if not isinstance(core, dict):
+            continue
+        executable = str(core.get("executable") or core.get("comm") or "unknown")
+        by_executable.setdefault(executable, []).append(core)
+        command = str(core.get("command") or "")
+        signal_name = str(core.get("signal_name") or "")
+        is_node = bool(re.search(r"(?:^|/)(?:node|nodejs)$|next-server", executable + " " + command, re.I))
+        oom_hint = bool(re.search(r"FatalProcessOutOfMemory|heap out of memory|OOMErrorHandler", command, re.I))
+        if is_node and (oom_hint or signal_name in {"SIGABRT", "6"}):
+            findings.append(_make_finding(
+                "node_heap_crash", "warning", "Memory",
+                "Node.js application aborted under possible heap exhaustion",
+                "A Node.js/Next.js process produced an abort core. The command metadata supports heap exhaustion when the OOM signature is present; correlate with canary RSS, swap and PSI before treating it as the sole cause.",
+                [f"executable={executable}", f"signal={signal_name or 'unknown'}", f"command={command[:240]}"],
+                "this_incident", "high" if oom_hint else "moderate"
+            ))
+
+    for executable, cores in by_executable.items():
+        if len(cores) < 2:
+            continue
+        evidence = [
+            f"{executable}: {len(cores)} structured coredumps in the collection window",
+            *[f"pid={core.get('pid')} signal={core.get('signal_name') or core.get('signal')} timestamp={core.get('timestamp')}" for core in cores[-5:]],
+        ]
+        findings.append(_make_finding(
+            "coredump_storm", "warning", "Software",
+            "Repeated coredumps from one application",
+            "Repeated crashes from the same executable can create a coredump/DrKonqi storm and add memory or I/O pressure during an already unstable incident.",
+            evidence, "historical", "moderate"
+        ))
 
     tail_lines = checks.get("previous_boot_tail", {}).get("output", "").splitlines()
     parsed_tail = [(parse_journal_time(line), line) for line in tail_lines]
@@ -1267,10 +1318,22 @@ def build_overall(incidents, boot_warnings=None):
                 break
 
     if not target or not target["hypotheses"]:
-        # If there are boot warnings but no strict incident, mention that stability warnings exist
-        has_active_warnings = any(inc["hypotheses"] for inc in sorted_incidents) or bool(boot_warnings)
-        title = "Recurring stability warnings remain" if has_active_warnings else "No leading cause identified"
-        return {"title": title, "confidence": "low", "summary": "No crash or unrecoverable lockup detected in the scanned boots."}, []
+        # Boot warnings are deliberately outside the incident windows. They
+        # are useful historical context, but must not be presented as an
+        # active fault when no current/previous incident has a hypothesis.
+        if any(inc["hypotheses"] for inc in sorted_incidents):
+            return {
+                "title": "Recurring stability warnings remain",
+                "confidence": "low",
+                "summary": "No crash or unrecoverable lockup detected in the scanned boots, but an incident still has a leading hypothesis.",
+            }, []
+        if boot_warnings:
+            return {
+                "title": "Historical warnings found",
+                "confidence": "low",
+                "summary": "Warnings were found outside the active incident windows; they are historical context, not evidence of a current fault.",
+            }, []
+        return {"title": "No leading cause identified", "confidence": "low", "summary": "No crash or unrecoverable lockup detected in the scanned boots."}, []
 
     top = target["hypotheses"][0]
     return {
@@ -1618,6 +1681,7 @@ def collect(
             "structured_evidence": incidents
         }
     findings, context = analyse(checks)
+    from stability_playbook import build_playbook
     timeline = build_timeline(checks)
     canary = analyse_canary(checks)
     freeze_classes = classify_freeze_evidence(findings, canary)
@@ -1625,6 +1689,10 @@ def collect(
     incidents, boot_warnings, unresolved = build_incidents(findings, checks)
     overall, hypotheses = build_overall(incidents, boot_warnings)
     for incident in incidents:
+        # Join canary/desktop-heartbeat telemetry before explaining, so a
+        # canary-refined failure_scope and updated evidence_completeness
+        # are reflected in the explanation below, not stale values.
+        attach_canary_evidence(incident, canary.get("samples", []))
         # Explainable confidence for every hypothesis this incident already
         # has, not a competing analysis -- no recurrence context here since
         # collect() only sees this one scan's incidents; a caller with
@@ -1659,6 +1727,7 @@ def collect(
         "freeze_classes": freeze_classes,
         "categories": category_status(findings, checks),
         "readiness": assess_readiness(checks),
+        "stability_playbook": build_playbook(findings, checks),
         "findings": findings,
 
         "timeline": timeline,

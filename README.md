@@ -38,6 +38,20 @@ controlled A/B experiments, monitoring-only signals, and explanations not
 supported by current evidence. It does not install packages, change kernel
 parameters, restart services, kill processes, or run destructive tests.
 
+Crash Doctor reports now include a confirmation-gated stability playbook. It
+surfaces one-monitor/GPU-acceleration/kernel A/B tests, workload attribution,
+coredump-limit guidance, update/reboot readiness and silent-background mode.
+Create `~/.config/fedora-crash-doctor/silent` to keep evidence collection and
+the canary active without desktop notifications.
+
+The Trends view also shows an **observed stability index** once at least two
+dated scans exist. It summarizes recorded shutdowns, kernel panics, incident
+findings and evidence coverage; it is not a hardware-health score or proof
+that an intermittent fault is fixed. Missing canary or persistent-journal
+evidence lowers coverage instead of being counted as healthy. Freeze analysis
+reads bounded tails from the active canary log and its three rotated backups
+when available.
+
 ## CLI examples
 
 Running `fedora_crash_doctor.py` with no arguments launches the GUI. Terminal
@@ -245,3 +259,9 @@ Application findings expose a `backtrace` object with state and, after capture,
 path and byte count. A report exported while the worker is running retains that
 snapshot; the completed text file records its final state. No GUI completion
 notification or automatic refresh of previously exported reports is provided.
+
+## Engineering standard
+
+Engineering principles: v5.1
+Assurance tier: 2
+Canonical repository: https://github.com/Parris-Tech-Services/FedoraCrashDoctor
