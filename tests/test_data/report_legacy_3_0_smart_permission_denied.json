@@ -1,0 +1,59 @@
+{
+ "metadata": {
+  "generated": "2026-08-05T13:17:42+10:00",
+  "hostname": "fixture-host",
+  "kernel": "7.1.5-201.fc44.x86_64",
+  "architecture": "x86_64",
+  "fedora": "Fedora Linux 44 (KDE Plasma Desktop Edition)",
+  "boot_id": "00000000-0000-0000-0000-000000000001",
+  "version": "3.0.0",
+  "mode": "quick"
+ },
+ "overall": {
+  "title": "No leading cause identified",
+  "summary": "Synthetic 3.0.0-era report (no schema_version)."
+ },
+ "categories": {
+  "storage": {
+   "status": "not_checked",
+   "label": "Not checked"
+  }
+ },
+ "counts": {
+  "critical": 0,
+  "warning": 0,
+  "info": 0
+ },
+ "findings": [],
+ "hypotheses": [],
+ "timeline": [],
+ "limitations": [
+  "smartctl could not read /dev/nvme0n1 without root."
+ ],
+ "canary": {
+  "interpretation": "No canary samples.",
+  "samples": []
+ },
+ "test_targets": {
+  "smart_devices": [
+   "/dev/nvme0n1"
+  ]
+ },
+ "schema": "fedora-crash-doctor-report",
+ "checks": {
+  "smart_nvme0n1": {
+   "command": "smartctl -a /dev/nvme0n1",
+   "status": "error",
+   "returncode": 2,
+   "duration_seconds": 0.0,
+   "output": "smartctl 7.5 2025-04-30 r5714\nSmartctl open device: /dev/nvme0n1 failed: Permission denied"
+  },
+  "filesystems": {
+   "command": "findmnt -n -o FSTYPE /",
+   "status": "ok",
+   "returncode": 0,
+   "duration_seconds": 0.0,
+   "output": "btrfs"
+  }
+ }
+}

@@ -1,0 +1,50 @@
+{
+ "schema_version": 1,
+ "schema": "fedora-crash-doctor-report",
+ "metadata": {
+  "generated": "2026-10-15T12:00:00+11:00",
+  "hostname": "fixture-host",
+  "kernel": "7.2.9-200.fc44.x86_64",
+  "architecture": "x86_64",
+  "fedora": "Fedora Linux 44 (KDE Plasma Desktop Edition)",
+  "boot_id": "00000000-0000-0000-0000-000000000002",
+  "version": "3.2.2",
+  "mode": "quick"
+ },
+ "overall": {
+  "title": "No leading cause identified",
+  "summary": "Synthetic current-schema report with no SMART checks."
+ },
+ "categories": {},
+ "counts": {
+  "critical": 0,
+  "warning": 0,
+  "info": 0
+ },
+ "findings": [],
+ "hypotheses": [],
+ "timeline": [],
+ "limitations": [],
+ "incidents": [],
+ "boot_warnings": [],
+ "freeze_classes": [],
+ "readiness": {},
+ "telemetry_timeline": [],
+ "unresolved_evidence": [],
+ "canary": {
+  "interpretation": "No canary samples.",
+  "samples": []
+ },
+ "test_targets": {
+  "smart_devices": []
+ },
+ "checks": {
+  "failed_units": {
+   "command": "systemctl --failed",
+   "status": "ok",
+   "returncode": 0,
+   "duration_seconds": 0.0,
+   "output": ""
+  }
+ }
+}

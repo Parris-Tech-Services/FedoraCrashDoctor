@@ -544,7 +544,12 @@ class TestEvidenceBasedSystemHealth(unittest.TestCase):
         from pathlib import Path
 
         repo_root = Path(__file__).resolve().parent.parent
+        fixtures = Path(__file__).resolve().parent / "test_data"
+        # Committed fixtures always run; the local scans are untracked host
+        # captures, checked too when present on the developer's machine.
         existing_files = [
+            fixtures / "report_current_no_smart_checks.json",
+            fixtures / "report_legacy_3_0_smart_permission_denied.json",
             repo_root / "scan.json",
             repo_root / "real_scan.json",
             repo_root / "test_cli_scan.json",
@@ -565,8 +570,8 @@ class TestEvidenceBasedSystemHealth(unittest.TestCase):
 
                 self.assertGreaterEqual(len(win.history_issues), 4)
                 nvme_issue = next(i for i in win.history_issues if i.get("title") == "Internal NVMe")
-                # Neither scan.json (no smart checks) nor real_scan.json (Permission denied on smartctl)
-                # has valid SMART evidence, so neither may claim Healthy or ~30% wear used!
+                # None of these reports has valid SMART evidence (no smart checks, or
+                # smartctl Permission denied), so none may claim Healthy or ~30% wear used.
                 self.assertNotIn("Healthy", nvme_issue["status"])
                 self.assertNotIn("~30% wear used", "\n".join(nvme_issue["evidence"]))
             self.assertTrue(found_any, "Expected at least one existing JSON report fixture in repo root")
