@@ -140,6 +140,86 @@ def zram_stats() -> dict[str, dict[str, int]]:
     return stats
 
 
+IO_TOP_PSI_SOME = 10.0  # % I/O PSI some (avg10) that triggers per-process attribution
+IO_TOP_MIN_BYTES_S = 512 * 1024
+
+
+def _unit_from_cgroup(cgroup: str) -> str:
+    """Deepest systemd unit in a cgroup v2 path.
+
+    Only components whose parent is a slice (or the user manager) are units;
+    deeper ones, like Konsole's tab(N).scope inside its app scope, are plain
+    sub-cgroups that systemctl set-property can't address.
+    """
+    parts = [p for p in cgroup.strip().split("::", 1)[-1].split("/") if p]
+    units = [
+        part for i, part in enumerate(parts)
+        if part.endswith((".service", ".scope", ".slice"))
+        and (i == 0 or parts[i - 1].endswith(".slice") or parts[i - 1].startswith("user@"))
+    ]
+    return units[-1] if units else ""
+
+
+class IoTracker:
+    """Per-process disk throughput from /proc/<pid>/io byte counters.
+
+    Rates need two readings, so the first update after a quiet period only
+    primes the counters. Reading /proc/*/io costs a few milliseconds, so the
+    canary only calls this while I/O pressure is elevated or a detailed sample
+    is due.
+    """
+
+    def __init__(self) -> None:
+        self.previous: dict[int, tuple[int, int, str]] = {}
+        self.previous_time: float | None = None
+
+    @staticmethod
+    def _read(pid: int) -> tuple[int, int] | None:
+        read_b = write_b = None
+        for line in read_text(f"/proc/{pid}/io").splitlines():
+            if line.startswith("read_bytes:"):
+                read_b = int(line.split()[1])
+            elif line.startswith("write_bytes:"):
+                write_b = int(line.split()[1])
+        return (read_b, write_b) if read_b is not None and write_b is not None else None
+
+    def update(self, limit: int = 5) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        current: dict[int, tuple[int, int, str]] = {}
+        for pid_str in os.listdir("/proc"):
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            counters = self._read(pid)
+            if counters is None:
+                continue
+            start_time = (read_text(f"/proc/{pid}/stat").rsplit(")", 1)[-1].split() or ["0"] * 20)
+            current[pid] = (counters[0], counters[1], start_time[19] if len(start_time) > 19 else "")
+        elapsed = now - self.previous_time if self.previous_time is not None else 0.0
+        top: list[dict[str, Any]] = []
+        if elapsed >= 0.5:
+            for pid, (read_b, write_b, started) in current.items():
+                prev = self.previous.get(pid)
+                if not prev or prev[2] != started:  # new process or reused PID
+                    continue
+                read_rate = max(0, read_b - prev[0]) / elapsed
+                write_rate = max(0, write_b - prev[1]) / elapsed
+                if read_rate + write_rate < IO_TOP_MIN_BYTES_S:
+                    continue
+                stat = read_text(f"/proc/{pid}/stat")
+                top.append({
+                    "pid": pid,
+                    "name": stat[stat.find("(") + 1:stat.rfind(")")] if "(" in stat else "",
+                    "cmd": read_text(f"/proc/{pid}/cmdline").replace("\0", " ").strip()[:100],
+                    "read_mb_s": round(read_rate / 1048576, 1),
+                    "write_mb_s": round(write_rate / 1048576, 1),
+                    "unit": _unit_from_cgroup(read_text(f"/proc/{pid}/cgroup")),
+                })
+            top.sort(key=lambda item: item["read_mb_s"] + item["write_mb_s"], reverse=True)
+        self.previous, self.previous_time = current, now
+        return top[:limit]
+
+
 def gather_processes() -> dict[str, Any]:
     processes = []
     blocked = []
@@ -343,7 +423,7 @@ def automatic_capture(event: dict[str, Any], sample_data: dict[str, Any]) -> str
         return None
 
 
-def sample(controller: StabilityController, last_detailed_time: float) -> tuple[dict[str, Any], int, float]:
+def sample(controller: StabilityController, last_detailed_time: float, io_tracker: IoTracker | None = None) -> tuple[dict[str, Any], int, float]:
     load = read_text("/proc/loadavg").split()
     mem = memory()
     psi_cpu = read_psi("cpu")
@@ -398,6 +478,14 @@ def sample(controller: StabilityController, last_detailed_time: float) -> tuple[
             row["systemd_oomd_active"] = None
         last_detailed_time = now
 
+    # Name the processes behind an I/O stall while it is happening; the
+    # tracker is re-primed whenever pressure returns after a quiet spell.
+    if io_tracker is not None:
+        if io_some >= IO_TOP_PSI_SOME or needs_detailed:
+            row["io_top"] = io_tracker.update()
+        else:
+            io_tracker.previous_time = None
+
     row.update(desktop_heartbeat())
     row["chrome"] = chrome_summary()
 
@@ -418,10 +506,11 @@ def main() -> int:
     last_detailed = 0.0
 
     controller = StabilityController(capture_callback=automatic_capture)
+    io_tracker = IoTracker()
     while True:
         started = time.monotonic()
         try:
-            data, interval, last_detailed = sample(controller, last_detailed)
+            data, interval, last_detailed = sample(controller, last_detailed, io_tracker)
             logger.info(json.dumps(data, separators=(",", ":")))
             handler.flush()
 

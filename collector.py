@@ -1360,7 +1360,12 @@ def category_status(findings, checks):
                 "Firmware": "Check firmware",
                 "Software": "Review crash logs",
             }
-            result[category] = {"status": "warning", "label": labels.get(category, "Needs attention")}
+            from storage_stability import PERFORMANCE_FINDING_IDS
+            if category == "Storage" and all(f.get("id") in PERFORMANCE_FINDING_IDS for f in related if f["severity"] == "warning"):
+                # Capacity/throughput stalls, not a failing drive.
+                result[category] = {"status": "warning", "label": "Free space / reduce disk load"}
+            else:
+                result[category] = {"status": "warning", "label": labels.get(category, "Needs attention")}
         else:
             related_checks = [c for c in checks.values() if c.get("category") == category]
             if any(c.get("status") == "ok" for c in related_checks):
@@ -1684,6 +1689,11 @@ def collect(
     from stability_playbook import build_playbook
     timeline = build_timeline(checks)
     canary = analyse_canary(checks)
+    # Storage stalls that aren't drive failures (QLC fill level, desktop in
+    # disk swap, the process saturating the disk) need canary samples, so
+    # they're added here, before freeze classification and the playbook.
+    from storage_stability import analyse_storage_stability
+    findings.extend(analyse_storage_stability(canary))
     freeze_classes = classify_freeze_evidence(findings, canary)
     telemetry_timeline = build_telemetry_timeline(canary.get("samples", []))
     incidents, boot_warnings, unresolved = build_incidents(findings, checks)

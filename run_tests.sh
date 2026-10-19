@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 # unittest.TestCase tests in the same pass; `python3 -m unittest discover` only
 # finds the latter, so pytest is the one authoritative runner here.
 python3 -m pytest -q tests/
-python3 -m py_compile *.py
+python3 -m py_compile ./*.py
 for script in *.sh; do bash -n "$script"; done
 python3 - <<'PY'
 import xml.etree.ElementTree as ET

@@ -76,4 +76,33 @@ def build_playbook(findings: list[dict[str, Any]], checks: dict[str, Any] | None
         "Suppresses desktop notification popups while retaining canary and report files.",
         ["Create ~/.config/fedora-crash-doctor/silent", "Leave the canary and desktop heartbeat enabled"],
     ))
+    if {"storage_qlc_nearly_full", "storage_io_culprit", "storage_desktop_in_disk_swap"} & ids:
+        actions.extend([
+            _action(
+                "storage_free_space",
+                "Free disk space to at least 20-25%",
+                "QLC SSDs keep a larger fast write cache when emptier, so sustained writes stop stalling the system.",
+                [
+                    "Check what is large: du -xh --max-depth=1 ~ | sort -rh | head -20",
+                    "Remove rebuildable caches you don't need (e.g. npm cache clean --force, old node_modules / .next build folders)",
+                    "Move finished archives (e.g. extracted .zip files) and VM/profile disks to external storage",
+                ],
+            ),
+            _action(
+                "storage_run_heavy_jobs_gently",
+                "Run big copies, extractions and builds with a disk bandwidth cap",
+                "A capped job still finishes, but leaves disk time for the desktop and its swap.",
+                [
+                    "systemd-run --user --scope -p IOReadBandwidthMax='/dev/nvme0n1 40M' -p IOWriteBandwidthMax='/dev/nvme0n1 30M' -- <command>",
+                    "Cap an app that is already running (until it exits): systemctl --user set-property --runtime <unit from the finding> IOWriteBandwidthMax='/dev/nvme0n1 20M'",
+                ],
+            ),
+        ])
+    if "storage_desktop_in_disk_swap" in ids:
+        actions.append(_action(
+            "storage_refresh_swapped_desktop",
+            "Bring the panel back into RAM after a heavy-I/O period",
+            "Restarting plasmashell reloads it into RAM; windows and apps keep running.",
+            ["systemctl --user restart plasma-plasmashell.service"],
+        ))
     return actions
