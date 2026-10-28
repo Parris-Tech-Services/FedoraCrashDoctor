@@ -7,7 +7,7 @@ FAILS=0
 
 echo -n "Checking Shell scripts... "
 if command -v shellcheck >/dev/null 2>&1; then
-    if shellcheck run_tests.sh *.sh; then
+    if shellcheck ./*.sh; then
         echo "[PASS]"
     else
         echo "[FAIL]"
