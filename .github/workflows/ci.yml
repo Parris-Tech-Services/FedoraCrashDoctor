@@ -23,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install ShellCheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck libegl1 libopengl0
       - name: Check shell scripts without suppressions
         run: shellcheck ./*.sh
       - name: Check shell syntax
