@@ -28,5 +28,9 @@ jobs:
         run: shellcheck ./*.sh
       - name: Check shell syntax
         run: for script in ./*.sh; do bash -n "$script"; done
+      - name: Install Python test dependencies
+        run: python3 -m pip install --user pytest PySide6
       - name: Python unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
