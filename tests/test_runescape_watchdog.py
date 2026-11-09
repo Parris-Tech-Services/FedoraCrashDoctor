@@ -71,6 +71,67 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(rw.next_profile("low-memory"), "low-memory")
 
 
+class ExistingServerRecoveryTests(unittest.TestCase):
+    def make_state(self, tmp, **changes):
+        state = {
+            "joshrs_install": {"root": tmp},
+            "servers": [], "ports": {"game_52402": False, "http_8888": False, "mgmt_8898": False},
+            "server_online": False, "client_running": True,
+        }
+        state.update(changes)
+        return state
+
+    def test_missing_original_launcher_does_not_guess_a_node_world(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(runescape_doctor, "collect_live_status",
+                             return_value=self.make_state(tmp)), \
+                patch.object(rw.subprocess, "Popen") as spawn:
+            ok, detail = rw.start_joshrs_server()
+            self.assertFalse(ok)
+            self.assertIn("original server launcher was not found", detail)
+            spawn.assert_not_called()
+
+    def test_symlinked_server_launcher_is_not_trusted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "other.sh").write_text("#!/bin/sh\n")
+            (root / "start-server.sh").symlink_to(root / "other.sh")
+            self.assertIsNone(rw.discover_joshrs_server_launcher({"root": tmp}))
+
+    def test_existing_world_never_spawns_a_competing_server(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(runescape_doctor, "collect_live_status",
+                             return_value=self.make_state(tmp, servers=[{"pid": 431834}])), \
+                patch.object(rw.subprocess, "Popen") as spawn:
+            ok, detail = rw.start_joshrs_server()
+            self.assertFalse(ok)
+            self.assertIn("second world", detail)
+            spawn.assert_not_called()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(runescape_doctor, "collect_live_status",
+                             return_value=self.make_state(tmp, ports={"game_52402": False, "http_8888": True})), \
+                patch.object(rw.subprocess, "Popen") as spawn:
+            self.assertFalse(rw.start_joshrs_server()[0])
+            spawn.assert_not_called()
+
+    def test_known_launcher_only_and_verified_port_before_claiming_restored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "start-server.sh").write_text("#!/usr/bin/env bash\n# existing launcher\n")
+            states = [self.make_state(tmp), self.make_state(tmp, server_online=True)]
+            with patch.object(runescape_doctor, "collect_live_status", side_effect=states), \
+                    patch.object(runescape_doctor, "state_dir", return_value=Path(tmp)), \
+                    patch.object(rw.subprocess, "Popen") as spawn:
+                ok, detail = rw.start_joshrs_server()
+            self.assertTrue(ok)
+            self.assertIn("started the game listener", detail)
+            self.assertEqual(spawn.call_args.args[0], ["bash", str(Path(tmp, "start-server.sh"))])
+            self.assertEqual(spawn.call_args.kwargs["cwd"], tmp)
+            self.assertEqual(spawn.call_args.kwargs["stdin"], subprocess.DEVNULL)
+            self.assertTrue(spawn.call_args.kwargs["start_new_session"])
+            self.assertEqual((Path(tmp) / "server-start.log").stat().st_mode & 0o777, 0o600)
+
+
+
 class FreezeDetectorTests(unittest.TestCase):
     def test_busy_process_is_never_frozen(self):
         det = rw.FreezeDetector(10)

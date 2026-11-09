@@ -144,6 +144,52 @@ class DiagnoseRuleTests(unittest.TestCase):
         self.assertGreaterEqual(len(timeline), 3)
 
 
+class GameServerOutageTests(unittest.TestCase):
+    def test_live_offline_game_port_outweighs_weak_wayland_warnings(self):
+        # 2026-11-09 14:43 Fedora capture: Java alive, no server processes/ports.
+        live = {
+            "joshrs_install": {"root": "/home/josh/dev/JoshRS/lostcity377"},
+            "client_running": True, "clients": [{"pid": 1929104}],
+            "servers": [], "server_online": False, "server_state": "offline",
+            "ports": {"game_52402": False, "http_8888": False, "mgmt_8898": False},
+        }
+        sysinfo = {
+            "session_type": "wayland", "java_major": 25,
+            "java_version_line": 'openjdk version "25.0.4.1"',
+            "mem_available_mb": 12414, "joshrs_root": live["joshrs_install"]["root"],
+        }
+        findings = rd.diagnose({"journal": "kwin_wayland: Failed to allocate a graphics buffer for a swapchain"}, sysinfo)
+        result = rd.classify_incident(findings, live)
+        self.assertEqual(result["category"], "game_server_offline")
+        self.assertIn("Server Offline", result["title"])
+        hypotheses = rd.build_hypotheses(findings, sysinfo, {}, live)
+        self.assertEqual(hypotheses[0]["id"], "hypothesis-live-joshrs-server-offline")
+        self.assertEqual(hypotheses[0]["confidence"], "high")
+        self.assertIn("52402", hypotheses[0]["supports"][0])
+
+    def test_complete_game_port_only_considered_online_when_correlated(self):
+        # A lingering Node command is NOT sufficient to mark the server ready.
+        def status(ports, servers):
+            with patch.object(rd, "discover_joshrs_install", return_value=None), \
+                    patch.object(rd, "_listening_tcp_ports", return_value=set(ports)), \
+                    patch.object(Path, "iterdir", return_value=[]):
+                return rd.collect_live_status()
+        self.assertEqual(status([], [])["server_state"], "offline")
+        self.assertEqual(status([8888, 8898], [])["server_state"], "partial_startup")
+        self.assertEqual(status([52402], [])["server_state"], "partial_startup")
+        self.assertTrue(status([52402, 8888, 8898], [])["server_online"])
+        self.assertFalse(status([8888, 8898], [])["server_online"])
+
+    def test_healthy_server_does_not_generate_offline_hypothesis(self):
+        info = {"joshrs_root": "/tmp/joshrs"}
+        live = {"joshrs_install": {"root": "/tmp/joshrs"}, "client_running": True,
+                "server_online": True}
+        self.assertNotEqual(rd.classify_incident([], live)["category"], "game_server_offline")
+        self.assertNotIn("hypothesis-live-joshrs-server-offline",
+                         [x["id"] for x in rd.build_hypotheses([], info, {}, live)])
+
+
+
 class SysinfoRuleTests(unittest.TestCase):
     def test_wayland_low_memory_new_java(self):
         sysinfo = {

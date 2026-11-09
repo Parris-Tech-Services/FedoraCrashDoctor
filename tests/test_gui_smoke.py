@@ -26,6 +26,8 @@ class GUISmokeTest(unittest.TestCase):
             self.assertIsNotNone(window.history_tree)
             self.assertIsNotNone(window.rs_detail_browser)
             self.assertIsNotNone(window.rs_tab_diagnose_btn)
+            self.assertIsNotNone(window.rs_server_restore_btn)
+            self.assertEqual(window.rs_server_restore_btn.text(), "Restore Server Connection")
             
             # Setup a timer to close the window after processing
             def close_window():

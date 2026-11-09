@@ -174,6 +174,88 @@ def client_dirs(cfg: Config) -> list[Path]:
     return []
 
 
+def discover_joshrs_server_launcher(install: dict[str, Any] | None = None) -> Path | None:
+    """Locate an EXISTING original server launcher, never construct a new world."""
+    install = install or runescape_doctor.discover_joshrs_install()
+    if not install:
+        return None
+    root = Path(install["root"])
+    if not root.is_dir():
+        return None
+    for relative in (
+        "start-server.sh",
+        "start-joshrs-server.sh",
+        "engine/start-server.sh",
+        "engine/run-server.sh",
+    ):
+        path = root / relative
+        # Don't execute arbitrary symlink targets or guess Node/DB flags.
+        if path.is_file() and not path.is_symlink():
+            return path
+    return None
+
+
+def start_joshrs_server() -> tuple[bool, str]:
+    """Opt-in start of the EXISTING offline server via its original launcher.
+
+    Refuses partial startups, occupied ports, missing scripts and all uncertain
+    states; does not restart clients, kill any process, edit saves/DB, or try to
+    install the observer/MCP. Must never be invoked by the background watchdog.
+    """
+    live = runescape_doctor.collect_live_status(include_thread_probe=False)
+    if not live.get("joshrs_install"):
+        return False, "No local JoshRS installation identified; no action taken."
+    if live.get("server_online"):
+        return True, "JoshRS game server is already online; no new world started."
+    if live.get("servers") or any((live.get("ports") or {}).values()):
+        return False, (
+            "Refusing to start a second world: a server process or a JoshRS port is already "
+            "present. Diagnose this partial start and its logs first."
+        )
+    script = discover_joshrs_server_launcher(live["joshrs_install"])
+    if not script:
+        return False, (
+            "Server is offline, but the original server launcher was not found. "
+            "No generic Node command was guessed, no world started, and no saves changed. "
+            "Check the existing JoshRS server startup script/service and logs."
+        )
+    root = Path(live["joshrs_install"]["root"])
+    log_path = runescape_doctor.state_dir() / "server-start.log"
+    try:
+        # Private log for diagnosis, no secrets/arguments in GUI responses.
+        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.fchmod(fd, 0o600)
+        try:
+            process = subprocess.Popen(
+                ["bash", str(script)],
+                cwd=str(root),
+                stdin=subprocess.DEVNULL,
+                stdout=fd,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        finally:
+            os.close(fd)
+        # A launcher can detach immediately, or remain running in foreground.
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            state = runescape_doctor.collect_live_status(include_thread_probe=False)
+            if state.get("server_online"):
+                return True, (
+                    "Original JoshRS server launcher started the game listener. "
+                    "Confirm player login and saved progress in the existing client."
+                )
+            if process.poll() is not None:
+                break
+            time.sleep(0.4)
+        return False, (
+            "The existing launcher was invoked, but server readiness is unverified. "
+            f"Read the private log {log_path}; do not launch another copy."
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"Could not start the existing JoshRS server launcher: {type(exc).__name__}. No retry."
+
+
 def start_joshrs_client() -> tuple[bool, str]:
     """Start the JoshRS client using its existing start-client.sh launcher if available."""
     live = runescape_doctor.collect_live_status(include_thread_probe=False)

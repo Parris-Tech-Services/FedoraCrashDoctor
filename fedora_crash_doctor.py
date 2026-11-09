@@ -294,6 +294,18 @@ class RuneScapeDiagnoseWorker(QObject):
             self.finished.emit({"capture_complete": False, "error": str(e), "failed_collectors": ["all"]})
 
 
+class RuneScapeServerStartWorker(QObject):
+    finished = Signal(bool, str)
+
+    def run(self) -> None:
+        try:
+            import runescape_watchdog
+            ok, message = runescape_watchdog.start_joshrs_server()
+        except Exception as exc:
+            ok, message = False, f"Server recovery failed: {type(exc).__name__}"
+        self.finished.emit(ok, message)
+
+
 class RuneScapeWatchdogWorker(QObject):
     event = Signal(str)
     finished = Signal(int)
@@ -1063,6 +1075,13 @@ class MainWindow(QMainWindow):
         self.rs_stop_client_btn = QPushButton("Stop Client")
         self.rs_stop_client_btn.clicked.connect(self.stop_runescape_client)
 
+        self.rs_server_restore_btn = QPushButton("Restore Server Connection")
+        self.rs_server_restore_btn.setToolTip(
+            "Start the existing offline JoshRS world only if its original launcher is known. "
+            "Never starts a second world or changes saves."
+        )
+        self.rs_server_restore_btn.clicked.connect(self.restore_runescape_server)
+
         self.rs_tab_watch_btn = QPushButton("Launch with Watchdog")
         self.rs_tab_watch_btn.clicked.connect(self.toggle_runescape_watchdog)
 
@@ -1077,6 +1096,7 @@ class MainWindow(QMainWindow):
             self.rs_refresh_btn,
             self.rs_start_client_btn,
             self.rs_stop_client_btn,
+            self.rs_server_restore_btn,
             self.rs_tab_watch_btn,
             self.rs_export_btn,
         ):
@@ -1123,7 +1143,12 @@ class MainWindow(QMainWindow):
             client_str = f"RUNNING (PID {c0.get('pid')}, RSS {c0.get('rss_mb', '?')} MB, {c0.get('threads', '?')} threads)"
         else:
             client_str = "STOPPED"
-        server_str = "ONLINE (ports 52402/8888/8898)" if live.get("server_online") else "OFFLINE"
+        server_str = "ONLINE (game port responding)" if live.get("server_online") else (
+            "PARTIAL STARTUP (not ready)" if live.get("server_state") == "partial_startup"
+            else "OFFLINE — client cannot connect"
+        )
+        if hasattr(self, "rs_server_restore_btn"):
+            self.rs_server_restore_btn.setEnabled(not live.get("server_online", False))
         self.rs_live_lbl.setText(
             f"Client: {client_str}  |  JoshRS Server: {server_str}  |  Install: {install_str}"
         )
@@ -1163,6 +1188,15 @@ class MainWindow(QMainWindow):
         out.append(
             f"<li><b>JoshRS Local Server:</b> {'Online (ports 52402, 8888, 8898 listening)' if live.get('server_online') else 'Offline'}</li>"
         )
+        if live.get("joshrs_install") and live.get("client_running") and not live.get("server_online"):
+            out.append(
+                "<h3>Connection recovery</h3>"
+                "<p><b>The Java game client is alive but its JoshRS game server is unavailable.</b> "
+                "Changing Java, scaling or Wayland settings will not restore the server. "
+                "Use <b>Restore Server Connection</b> only when the original server is fully stopped "
+                "and its original launcher is present. If the world is partly starting, "
+                "inspect the server log and protect your existing player saves instead.</p>"
+            )
         if summary.get("client_log"):
             out.append(f"<li><b>Analysed Client Log:</b> <code>{html.escape(str(summary['client_log']))}</code></li>")
         if summary.get("capture_path"):
@@ -1212,6 +1246,51 @@ class MainWindow(QMainWindow):
         self.refresh_runescape_status()
         if not ok:
             QMessageBox.warning(self, "Could not start RuneScape client", msg)
+
+    def restore_runescape_server(self) -> None:
+        import runescape_doctor
+        live = runescape_doctor.collect_live_status(include_thread_probe=False)
+        if live.get("server_online"):
+            self.refresh_runescape_status()
+            self._set_rs_status_text("JoshRS server already online — no action taken.")
+            return
+        if live.get("servers") or any((live.get("ports") or {}).values()):
+            QMessageBox.warning(
+                self, "Partial server startup",
+                "A server process or game/web port still exists. Crash Doctor will not "
+                "start a competing world. Inspect the existing server logs and startup configuration."
+            )
+            return
+        confirm = QMessageBox.question(
+            self, "Start the existing JoshRS server?",
+            "The game server is offline while the Java client is still running.\n\n"
+            "Crash Doctor will ONLY invoke a recognised original server launcher, if present. "
+            "It will not stop any process, reset databases, overwrite player saves, "
+            "install content or restart the client.\n\n"
+            "Do not proceed if another agent is currently migrating/restoring the game world. "
+            "Start the existing server?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.rs_server_restore_btn.setEnabled(False)
+        self._set_rs_status_text("Checking the existing JoshRS server launcher...")
+        self.rs_server_thread = QThread()
+        self.rs_server_worker = RuneScapeServerStartWorker()
+        self.rs_server_worker.moveToThread(self.rs_server_thread)
+        self.rs_server_thread.started.connect(self.rs_server_worker.run)
+        self.rs_server_worker.finished.connect(self.on_runescape_server_started)
+        self.rs_server_worker.finished.connect(self.rs_server_thread.quit)
+        self.rs_server_worker.finished.connect(self.rs_server_worker.deleteLater)
+        self.rs_server_thread.finished.connect(self.rs_server_thread.deleteLater)
+        self.rs_server_thread.start()
+
+    def on_runescape_server_started(self, ok: bool, message: str) -> None:
+        self._set_rs_status_text(message)
+        self.refresh_runescape_status()
+        if not ok:
+            QMessageBox.warning(self, "JoshRS server not yet restored", message)
 
     def stop_runescape_client(self) -> None:
         import runescape_watchdog
