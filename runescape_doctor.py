@@ -426,12 +426,21 @@ def collect_live_status(include_thread_probe: bool = False) -> dict[str, Any]:
         "http_8888": 8888 in ports,
         "mgmt_8898": 8898 in ports,
     }
+    # A Node process alone does not prove that a game port accepts logins.
+    # In particular, a partially booted server can leave the Java client
+    # retrying forever despite the process remaining alive.
+    game_ready = joshrs_ports["game_52402"] and (
+        bool(servers) or (joshrs_ports["http_8888"] and joshrs_ports["mgmt_8898"])
+    )
     return {
         "joshrs_install": install,
         "clients": clients,
         "servers": servers,
         "ports": joshrs_ports,
-        "server_online": bool(servers) or all(joshrs_ports.values()),
+        "server_online": bool(game_ready),
+        "server_state": "online" if game_ready else (
+            "partial_startup" if servers or any(joshrs_ports.values()) else "offline"
+        ),
         "client_running": bool(clients),
     }
 
@@ -613,6 +622,16 @@ def classify_incident(findings: list[Finding], live_status: dict[str, Any] | Non
             "title": "Memory Exhaustion / Out-Of-Memory Termination",
             "summary": "The client exhausted its Java heap or was killed by the Linux kernel OOM killer.",
         }
+    if (live_status or {}).get("client_running") and (live_status or {}).get("joshrs_install") and not (live_status or {}).get("server_online"):
+        return {
+            "category": "game_server_offline",
+            "title": "JoshRS Server Offline — Client Retrying Connection",
+            "summary": (
+                "The Java client is still running, but the local JoshRS game port is unavailable. "
+                "This is a game-server outage or incomplete server startup, not an established Java "
+                "client crash. Diagnose and recover the existing server before changing Java/graphics."
+            ),
+        }
     if finding_ids & {"gpu-hang", "x11-gl-error", "compositor-gl"}:
         return {
             "category": "renderer_or_display_failure",
@@ -642,6 +661,30 @@ def build_hypotheses(
     hypotheses: list[dict[str, Any]] = []
     by_id = {f.id: f for f in findings}
     server_up = bool((live_status or {}).get("server_online"))
+    if ((live_status or {}).get("joshrs_install") and
+            (live_status or {}).get("client_running") and not server_up):
+        ports = (live_status or {}).get("ports") or {}
+        missing = [label for label, open_ in ports.items() if not open_]
+        hypotheses.append({
+            "rank": 1,
+            "id": "hypothesis-live-joshrs-server-offline",
+            "title": "JoshRS game server unavailable — client says 'Connection problem'",
+            "confidence": "high",
+            "supports": [
+                "Game port 52402 is not listening." if not ports.get("game_52402") else
+                "Game port 52402 is listening but the local server has not passed readiness checks.",
+                "Missing listener(s): " + ", ".join(missing) if missing else
+                "Server process/port readiness does not match normal JoshRS state.",
+                "The Java client remains alive; restarting it cannot bring back an offline server.",
+            ],
+            "against": [],
+            "fix": (
+                "Diagnose the existing server launcher, service and backend-specific logs. "
+                "Use 'Restore Server Connection' ONLY when no server or game port is active, "
+                "with an identified original launcher and preserved player saves. "
+                "Never reset the database, apply quest patches or start a second world to fix this."
+            ),
+        })
 
     if "java-uncaught-game-thread-exception" in by_id or "java-game-thread-missing" in by_id:
         ev_list: list[str] = []
@@ -901,6 +944,21 @@ def capture_runescape_incident(
         sources["threads"] = thread_dump
 
     findings = diagnose(sources, sysinfo)
+    if live_status.get("joshrs_install") and live_status.get("client_running") and not live_status.get("server_online"):
+        ports = live_status.get("ports") or {}
+        findings.append(Finding(
+            id="joshrs-game-server-offline",
+            severity="high",
+            title="JoshRS game server offline while the Java client is running",
+            explanation=(
+                "The game port is unavailable or the server is only partially started; "
+                "the client's 'Connection problem' screen is a network retry, not a Java crash."
+            ),
+            fix="Inspect the original server launcher and its recent logs; restore only the existing world safely.",
+            evidence=f"server_state={live_status.get('server_state', 'offline')}, ports={ports}",
+            source="live-status",
+        ))
+        findings.sort(key=lambda finding: SEVERITY_ORDER.get(finding.severity, 9))
     classification = classify_incident(findings, live_status)
     hypotheses = build_hypotheses(findings, sysinfo, sources, live_status)
     timeline = build_timeline(sources, user_journal)
