@@ -286,7 +286,7 @@ class RuneScapeDiagnoseWorker(QObject):
         try:
             import runescape_doctor
             import runescape_watchdog
-            cfg = runescape_watchdog.load_config()
+            cfg = runescape_watchdog.discover_joshrs_config()
             self.finished.emit(runescape_doctor.capture_runescape_incident(
                 java_path=cfg.java_path, extra_dirs=runescape_watchdog.client_dirs(cfg),
             ))
@@ -306,7 +306,7 @@ class RuneScapeWatchdogWorker(QObject):
     def run(self):
         try:
             import runescape_watchdog
-            cfg = runescape_watchdog.load_config()
+            cfg = runescape_watchdog.discover_joshrs_config()
             self.supervisor = runescape_watchdog.Supervisor(
                 cfg, emit=lambda kind, message: self.event.emit(f"[{kind}] {message}"),
             )
@@ -432,6 +432,7 @@ class MainWindow(QMainWindow):
         self.build_stability_guard_tab()
         self.build_memory_oom_tab()
         self.build_system_history_tab()
+        self.build_runescape_tab()
         self.build_export_tab()
         self.setCentralWidget(root)
 
@@ -1024,10 +1025,220 @@ class MainWindow(QMainWindow):
         if msg.clickedButton() == open_btn and summary.get("capture_path"):
             QDesktopServices.openUrl(QUrl.fromLocalFile(summary["capture_path"]))
 
+    def build_runescape_tab(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        self.rs_last_summary: dict[str, Any] | None = None
+
+        header_frame = QFrame()
+        header_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        header_frame.setStyleSheet("background-color: #fcfcfd; border-radius: 6px; border: 1px solid #eaecf0;")
+        header_layout = QVBoxLayout(header_frame)
+
+        title = QLabel("RuneScape / JoshRS #377 Doctor")
+        title.setStyleSheet("font-size: 16px; font-weight: 700; border: none;")
+        subtitle = QLabel(
+            "Dedicated diagnostics, live JVM/process monitor, thread-dump capture, and opt-in watchdog "
+            "for local JoshRS revision-377 and RuneScape Java clients."
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color: #475467; border: none;")
+
+        self.rs_live_lbl = QLabel("Checking JoshRS client and server status...")
+        self.rs_live_lbl.setWordWrap(True)
+        self.rs_live_lbl.setStyleSheet("font-weight: 600; color: #1d2939; border: none;")
+
+        btn_row = QHBoxLayout()
+        self.rs_tab_diagnose_btn = QPushButton("Diagnose RuneScape")
+        self.rs_tab_diagnose_btn.setStyleSheet("font-weight: bold;")
+        self.rs_tab_diagnose_btn.clicked.connect(self.run_runescape_diagnose)
+
+        self.rs_refresh_btn = QPushButton("Refresh Live Status")
+        self.rs_refresh_btn.clicked.connect(self.refresh_runescape_status)
+
+        self.rs_start_client_btn = QPushButton("Start Client")
+        self.rs_start_client_btn.clicked.connect(self.start_runescape_client)
+
+        self.rs_stop_client_btn = QPushButton("Stop Client")
+        self.rs_stop_client_btn.clicked.connect(self.stop_runescape_client)
+
+        self.rs_tab_watch_btn = QPushButton("Launch with Watchdog")
+        self.rs_tab_watch_btn.clicked.connect(self.toggle_runescape_watchdog)
+
+        self.rs_tab_set_client_btn = QPushButton("Set Client .jar...")
+        self.rs_tab_set_client_btn.clicked.connect(self.set_runescape_client)
+
+        self.rs_export_btn = QPushButton("Export Report...")
+        self.rs_export_btn.clicked.connect(self.export_runescape_report)
+
+        for btn in (
+            self.rs_tab_diagnose_btn,
+            self.rs_refresh_btn,
+            self.rs_start_client_btn,
+            self.rs_stop_client_btn,
+            self.rs_tab_watch_btn,
+            self.rs_tab_set_client_btn,
+            self.rs_export_btn,
+        ):
+            btn_row.addWidget(btn)
+        btn_row.addStretch()
+
+        self.rs_tab_status_lbl = QLabel("")
+        self.rs_tab_status_lbl.setWordWrap(True)
+        self.rs_tab_status_lbl.setStyleSheet("color: #027a48; border: none;")
+
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        header_layout.addWidget(self.rs_live_lbl)
+        header_layout.addLayout(btn_row)
+        header_layout.addWidget(self.rs_tab_status_lbl)
+        layout.addWidget(header_frame)
+
+        self.rs_detail_browser = QTextBrowser()
+        layout.addWidget(self.rs_detail_browser, 1)
+
+        self.tabs.addTab(page, "RuneScape Doctor")
+        self.refresh_runescape_status()
+
+    def _set_rs_status_text(self, text: str) -> None:
+        self.rs_status_lbl.setText(text)
+        if hasattr(self, "rs_tab_status_lbl"):
+            self.rs_tab_status_lbl.setText(text)
+
+    def refresh_runescape_status(self) -> None:
+        if not hasattr(self, "rs_live_lbl"):
+            return
+        try:
+            import runescape_doctor
+            live = runescape_doctor.collect_live_status(include_thread_probe=False)
+        except Exception as exc:
+            self.rs_live_lbl.setText(f"Could not read live status: {exc}")
+            return
+
+        install = live.get("joshrs_install")
+        install_str = install["root"] if install else "Not auto-discovered (use Set Client .jar...)"
+        clients = live.get("clients", [])
+        if clients:
+            c0 = clients[0]
+            client_str = f"RUNNING (PID {c0.get('pid')}, RSS {c0.get('rss_mb', '?')} MB, {c0.get('threads', '?')} threads)"
+        else:
+            client_str = "STOPPED"
+        server_str = "ONLINE (ports 52402/8888/8898)" if live.get("server_online") else "OFFLINE"
+        self.rs_live_lbl.setText(
+            f"Client: {client_str}  |  JoshRS Server: {server_str}  |  Install: {install_str}"
+        )
+        if not self.rs_last_summary:
+            self._render_runescape_detail({"live_status": live, "findings": [], "hypotheses": [], "timeline": []})
+
+    def _render_runescape_detail(self, summary: dict[str, Any]) -> None:
+        if not hasattr(self, "rs_detail_browser"):
+            return
+        live = summary.get("live_status") or {}
+        classification = summary.get("incident_classification") or {}
+        hypotheses = summary.get("hypotheses") or []
+        findings = summary.get("findings") or []
+        timeline = summary.get("timeline") or []
+
+        out: list[str] = []
+        if classification.get("title"):
+            out.append(f"<h2>{html.escape(classification['title'])}</h2>")
+            out.append(f"<p>{html.escape(classification.get('summary', ''))}</p>")
+        else:
+            out.append("<h2>RuneScape / JoshRS Diagnostics</h2>")
+            out.append("<p>Click <b>Diagnose RuneScape</b> to inspect client logs, thread dumps, journal events, and GPU/Wayland telemetry.</p>")
+
+        clients = live.get("clients", [])
+        out.append("<h3>Live Process &amp; JVM Monitor</h3><ul>")
+        if clients:
+            for c in clients:
+                gt = c.get("game_thread_alive")
+                gt_txt = "Alive" if gt is True else ("DEAD (Frozen Window)" if gt is False else "Ready")
+                out.append(
+                    f"<li><b>Client PID {c.get('pid')}:</b> RSS {c.get('rss_mb', '?')} MB, "
+                    f"Peak {c.get('vmpeak_mb', '?')} MB, Threads {c.get('threads', '?')}, "
+                    f"Game Loop (Thread-2): <b>{html.escape(gt_txt)}</b></li>"
+                )
+        else:
+            out.append("<li><b>Client Process:</b> Not currently running</li>")
+        out.append(
+            f"<li><b>JoshRS Local Server:</b> {'Online (ports 52402, 8888, 8898 listening)' if live.get('server_online') else 'Offline'}</li>"
+        )
+        if summary.get("client_log"):
+            out.append(f"<li><b>Analysed Client Log:</b> <code>{html.escape(str(summary['client_log']))}</code></li>")
+        if summary.get("capture_path"):
+            out.append(f"<li><b>Saved Evidence Bundle:</b> <code>{html.escape(str(summary['capture_path']))}</code></li>")
+        out.append("</ul>")
+
+        if hypotheses:
+            out.append("<h3>Ranked Root-Cause Hypotheses</h3>")
+            for hyp in hypotheses:
+                out.append(
+                    f"<h4>#{hyp.get('rank')} [{html.escape(str(hyp.get('confidence', '')).upper())}] "
+                    f"{html.escape(str(hyp.get('title', '')))}</h4><ul>"
+                )
+                for sup in hyp.get("supports", []):
+                    out.append(f"<li><b>Supporting evidence:</b> <code>{html.escape(str(sup))}</code></li>")
+                for ag in hyp.get("against", []):
+                    out.append(f"<li><b>Contradicting evidence:</b> {html.escape(str(ag))}</li>")
+                out.append(f"<li><b>Recommended fix:</b> {html.escape(str(hyp.get('fix', '')))}</li></ul>")
+
+        if findings:
+            out.append("<h3>Detected Findings</h3><ul>")
+            for f in findings:
+                ev = f" — <code>{html.escape(str(f.get('evidence')))}</code>" if f.get("evidence") else ""
+                out.append(
+                    f"<li><b>[{html.escape(str(f.get('severity', '')).upper())}] {html.escape(str(f.get('title', '')))}</b>: "
+                    f"{html.escape(str(f.get('explanation', '')))}{ev}<br/>"
+                    f"<i>Action:</i> {html.escape(str(f.get('fix', '')))}</li>"
+                )
+            out.append("</ul>")
+
+        if timeline:
+            out.append("<h3>Correlated Incident Timeline</h3><ul>")
+            for ev in timeline[-15:]:
+                out.append(
+                    f"<li><code>{html.escape(str(ev.get('timestamp', '')))}</code> "
+                    f"[<b>{html.escape(str(ev.get('source', '')))}</b>] "
+                    f"{html.escape(str(ev.get('event', '')))}</li>"
+                )
+            out.append("</ul>")
+
+        self.rs_detail_browser.setHtml("".join(out))
+
+    def start_runescape_client(self) -> None:
+        import runescape_watchdog
+        ok, msg = runescape_watchdog.start_joshrs_client()
+        self._set_rs_status_text(msg)
+        self.refresh_runescape_status()
+        if not ok:
+            QMessageBox.warning(self, "Could not start RuneScape client", msg)
+
+    def stop_runescape_client(self) -> None:
+        import runescape_watchdog
+        ok, msg = runescape_watchdog.stop_joshrs_client()
+        self._set_rs_status_text(msg)
+        self.refresh_runescape_status()
+        if not ok:
+            QMessageBox.warning(self, "Could not stop RuneScape client", msg)
+
+    def export_runescape_report(self) -> None:
+        if not self.rs_last_summary:
+            QMessageBox.information(self, "No RuneScape report", "Click 'Diagnose RuneScape' first to generate a report.")
+            return
+        path = self.choose_export("json", "Export RuneScape Diagnostic Report")
+        if not path:
+            return
+        Path(path).write_text(self.redact(json.dumps(self.rs_last_summary, indent=2, ensure_ascii=False)))
+        self._set_rs_status_text(f"Exported privacy-safe report to {path}")
+
     def run_runescape_diagnose(self) -> None:
         self.rs_diagnose_btn.setEnabled(False)
         self.rs_diagnose_btn.setText("Diagnosing RuneScape client...")
-        self.rs_status_lbl.setText("Reading logs, journals and crash dumps...")
+        if hasattr(self, "rs_tab_diagnose_btn"):
+            self.rs_tab_diagnose_btn.setEnabled(False)
+            self.rs_tab_diagnose_btn.setText("Diagnosing...")
+        self._set_rs_status_text("Reading logs, journals, JVM state and crash dumps...")
 
         from PySide6.QtCore import QThread
         self.rs_diagnose_thread = QThread()
@@ -1043,16 +1254,23 @@ class MainWindow(QMainWindow):
     def on_runescape_diagnose_finished(self, summary: dict) -> None:
         self.rs_diagnose_btn.setEnabled(True)
         self.rs_diagnose_btn.setText("Diagnose RuneScape Client")
+        if hasattr(self, "rs_tab_diagnose_btn"):
+            self.rs_tab_diagnose_btn.setEnabled(True)
+            self.rs_tab_diagnose_btn.setText("Diagnose RuneScape")
         if not summary.get("capture_complete"):
-            self.rs_status_lbl.setText(f"Diagnosis failed: {summary.get('error', 'Unknown')}")
+            self._set_rs_status_text(f"Diagnosis failed: {summary.get('error', 'Unknown')}")
             return
+
+        self.rs_last_summary = summary
+        self.refresh_runescape_status()
+        self._render_runescape_detail(summary)
 
         findings = summary.get("findings", [])
         failed = summary.get("failed_collectors", [])
         status = f"{len(findings)} possible cause(s) found." if findings else "No known cause matched the evidence."
         if failed:
             status += f" {len(failed)} data source(s) unavailable: {', '.join(failed)}."
-        self.rs_status_lbl.setText(status)
+        self._set_rs_status_text(status)
         lines = [status, f"Output path: {summary.get('capture_path')}", ""]
         for number, item in enumerate(findings[:6], 1):
             lines.append(f"{number}. [{str(item.get('severity', '')).upper()}] {item.get('title')}")
@@ -1086,23 +1304,27 @@ class MainWindow(QMainWindow):
         cfg.jar_path = path
         cfg.custom_command = []
         runescape_watchdog.save_config(cfg)
-        self.rs_status_lbl.setText(f"Client set to {path}")
+        self._set_rs_status_text(f"Client set to {path}")
 
     def toggle_runescape_watchdog(self) -> None:
         if self.rs_watch_running:
             self.rs_watch_worker.stop()
             self.rs_watch_btn.setEnabled(False)
-            self.rs_status_lbl.setText("Stopping watchdog. The client keeps running.")
+            if hasattr(self, "rs_tab_watch_btn"):
+                self.rs_tab_watch_btn.setEnabled(False)
+            self._set_rs_status_text("Stopping watchdog. The client keeps running.")
             return
 
         import runescape_watchdog
-        if not runescape_watchdog.load_config().has_client():
-            self.rs_status_lbl.setText("No client configured yet. Use 'Set Client .jar...' first.")
+        if not runescape_watchdog.discover_joshrs_config().has_client():
+            self._set_rs_status_text("No client configured yet. Use 'Set Client .jar...' first.")
             return
 
         self.rs_watch_running = True
         self.rs_watch_btn.setText("Stop Watchdog")
-        self.rs_status_lbl.setText("Starting RuneScape under the watchdog...")
+        if hasattr(self, "rs_tab_watch_btn"):
+            self.rs_tab_watch_btn.setText("Stop Watchdog")
+        self._set_rs_status_text("Starting RuneScape under the watchdog...")
 
         from PySide6.QtCore import QThread
         self.rs_watch_thread = QThread()
@@ -1117,16 +1339,21 @@ class MainWindow(QMainWindow):
         self.rs_watch_thread.start()
 
     def on_runescape_event(self, text: str) -> None:
-        self.rs_status_lbl.setText(text[:400])
+        self._set_rs_status_text(text[:400])
+        self.refresh_runescape_status()
 
     def on_runescape_watchdog_finished(self, code: int) -> None:
         self.rs_watch_running = False
         self.rs_watch_btn.setEnabled(True)
         self.rs_watch_btn.setText("Launch RuneScape with Watchdog")
+        if hasattr(self, "rs_tab_watch_btn"):
+            self.rs_tab_watch_btn.setEnabled(True)
+            self.rs_tab_watch_btn.setText("Launch with Watchdog")
+        self.refresh_runescape_status()
         if code == 0:
-            self.rs_status_lbl.setText("Watchdog finished.")
+            self._set_rs_status_text("Watchdog finished.")
         elif code == 1:
-            self.rs_status_lbl.setText("Watchdog gave up after repeated failures. Run 'Diagnose RuneScape Client' for the likely cause.")
+            self._set_rs_status_text("Watchdog gave up after repeated failures. Run 'Diagnose RuneScape Client' for the likely cause.")
 
     def build_tests_tab(self) -> None:
         page = QWidget(); layout = QVBoxLayout(page)

@@ -1,5 +1,5 @@
 Name:           fedora-crash-doctor
-Version:        3.2.0
+Version:        3.2.1
 Release:        1%{?dist}
 Summary:        Evidence-weighted crash diagnostics for Fedora
 License:        MIT
@@ -104,6 +104,9 @@ systemctl --global enable fedora-crash-doctor-stability.path >/dev/null 2>&1 || 
 %{_datadir}/applications/fedora-crash-doctor.desktop
 
 %changelog
+* Mon Nov 09 2026 Fedora Crash Doctor contributors <noreply@example.invalid> - 3.2.1-1
+- Add RuneScape / JoshRS #377 Doctor tab, live JVM/thread diagnostics, and watchdog
+
 * Wed Aug 26 2026 Fedora Crash Doctor contributors <noreply@example.invalid> - 3.2.0-1
 - Add host stability audit, explicit CLI, report schema checks and deep scan mode
 

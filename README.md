@@ -38,43 +38,29 @@ controlled A/B experiments, monitoring-only signals, and explanations not
 supported by current evidence. It does not install packages, change kernel
 parameters, restart services, kill processes, or run destructive tests.
 
-## RuneScape client addon
+## RuneScape / JoshRS #377 Doctor
 
-For a RuneScape (RS2) Java client that keeps crashing or freezing. Three parts:
+For a RuneScape (RS2 / JoshRS revision-377) Java client that keeps crashing or freezing:
 
-- **Diagnose** (`runescape_doctor.py`, read-only): reads the client log, JVM
-  `hs_err_pid*.log` reports, the kernel/user journal and `coredumpctl`, matches
-  them against known causes (heap exhaustion, kernel OOM kills, native crashes
-  inside GL/X11 libraries, GPU hangs, missing libraries, Java version mismatch,
-  deadlocks) and saves a report under `~/.local/share/FedoraCrashDoctor/captures/`.
-- **Launch** (`runescape_watchdog.py`): starts the client under a profile of
-  Java2D/graphics flags (`default`, `stable-graphics`, `xwayland-safe`,
-  `software`, `low-memory`) and logs its output.
-- **Watchdog**: restarts the client when it crashes or freezes, saves a diagnosis
-  each time, and after repeated failures steps through the graphics profiles
-  automatically. A frozen client gets a thread dump (`jcmd`) before it is stopped.
+- **Auto-discovery**: automatically detects a local JoshRS revision-377 installation (`~/dev/JoshRS/lostcity377`, `jagex2.client.Client`, `start-client.sh`, `/tmp/joshrs-client-persistent.log`, and local game/HTTP/management server ports `52402`, `8888`, `8898`) without requiring manual `.jar` setup.
+- **Diagnose** (`runescape_doctor.py`, read-only): reads the client log, live JVM thread dumps (`jcmd`/`jstack`), JVM `hs_err_pid*.log` reports, `joshrs-client.service` user logs, the kernel/system journal and `coredumpctl`. Distinguishes uncaught game-thread exceptions (`Thread-2` dying while AWT/Java Sound threads keep the window open), thread deadlocks, heap exhaustion, kernel OOM kills, native GL/X11 crashes, KWin/Wayland swapchain events, and fixed-aspect (`765x503`) black viewport margins. Saves a private (`0700`/`0600`) report bundle under `~/.local/share/FedoraCrashDoctor/captures/`.
+- **Dedicated GUI Tab (`RuneScape Doctor`)**: live client PID/RSS/heap/game-thread monitor, server status check, **Diagnose RuneScape**, **Start Client** / **Stop Client** (via `start-client.sh` / `joshrs-client.service`), **Launch with Watchdog**, and privacy-safe report export.
+- **Watchdog** (`runescape_watchdog.py`): starts the client under a profile of Java2D/graphics flags (`default`, `stable-graphics`, `xwayland-safe`, `software`, `low-memory`), monitors for both CPU-idle freezes and uncaught game-thread (`Thread-2`) crashes, captures a `jcmd` thread dump before stopping a frozen client, and enforces bounded restarts with profile escalation.
 
-In the GUI these are on the System History tab, next to the Chrome capture.
 From a terminal:
 
 ```bash
-python3 runescape_watchdog.py config --jar ~/games/rs2/client.jar
-python3 runescape_watchdog.py run                 # launch and keep alive
-python3 runescape_watchdog.py watch               # watch a client that is already running
+python3 runescape_watchdog.py status              # live client, JVM thread & server check (read-only)
 python3 runescape_watchdog.py diagnose            # read-only diagnosis of the latest incident
+python3 runescape_watchdog.py run                 # launch and keep alive under watchdog
+python3 runescape_watchdog.py watch               # watch a client that is already running
 python3 runescape_watchdog.py profiles
+python3 runescape_watchdog.py config --jar ~/games/rs2/client.jar
 ```
 
 Settings live in `~/.config/fedora-crash-doctor/runescape.json`; logs in
 `~/.local/state/fedora-crash-doctor/runescape/`. Set `custom_command` (use
-`{jvm}` where the profile flags should go) if the client isn't a plain `-jar`.
-
-Limits: freeze detection means "no CPU activity for `freeze_seconds`" (default
-45), so a client stuck in a busy loop is not caught. The graphics profiles are
-common mitigations, not guaranteed fixes. The watchdog only ever starts or
-stops the client you configured (or the single PID you pass to `watch`); stopping
-the watchdog leaves the client running. Diagnosis rules are heuristics: read the
-evidence line before acting on a suggested fix.
+`{jvm}` where the profile flags should go) if using a custom non-JoshRS launcher.
 
 ## CLI examples
 

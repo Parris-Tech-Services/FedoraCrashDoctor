@@ -21,9 +21,11 @@ class GUISmokeTest(unittest.TestCase):
             # Process events
             app.processEvents()
             
-            # Test that we can switch to the System History tab
-            # We don't have to literally switch, just making sure it is built
+            # Test that we can switch to the System History and RuneScape Doctor tabs
+            # We don't have to literally switch, just making sure they are built
             self.assertIsNotNone(window.history_tree)
+            self.assertIsNotNone(window.rs_detail_browser)
+            self.assertIsNotNone(window.rs_tab_diagnose_btn)
             
             # Setup a timer to close the window after processing
             def close_window():

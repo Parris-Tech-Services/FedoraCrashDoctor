@@ -207,6 +207,22 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("frozen", self.kinds())
         self.assertIn("giveup", self.kinds())
 
+    def test_crashed_game_thread_with_busy_audio_loop_is_detected_as_frozen(self):
+        code = (
+            "import sys, time\n"
+            "print('Exception in thread \"Thread-2\" java.lang.ArrayIndexOutOfBoundsException: Index 32767', flush=True)\n"
+            "end = time.time() + 30\n"
+            "while time.time() < end:\n"
+            "    _ = sum(range(5000))\n"
+            "    time.sleep(0.01)\n"
+        )
+        sup = self.make(code, max_restarts=0, freeze_seconds=60)
+        started = time.monotonic()
+        self.assertEqual(sup.run(), 1)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertIn("frozen", self.kinds())
+        self.assertIn("giveup", self.kinds())
+
     def test_missing_client_config_returns_2(self):
         sup = rw.Supervisor(rw.Config(), emit=self.emit)
         self.assertEqual(sup.run(), 2)

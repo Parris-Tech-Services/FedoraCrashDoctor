@@ -87,6 +87,62 @@ class DiagnoseRuleTests(unittest.TestCase):
         found = ids(rd.diagnose({"client": text, "hs_err": text}))
         self.assertEqual(found.count("java-heap-oom"), 1)
 
+    def test_uncaught_game_thread_exception_detected_with_stack_frame(self):
+        log = (
+            'Exception in thread "Thread-2" java.lang.ArrayIndexOutOfBoundsException: Index 32767 out of bounds for length 16384\n'
+            '\tat jagex2.client.Client.updateFacingDirection(Client.java:5400)\n'
+            '\tat jagex2.client.Client.updateEntity(Client.java:5226)\n'
+        )
+        findings = rd.diagnose({"client": log})
+        self.assertIn("java-uncaught-game-thread-exception", ids(findings))
+        top = findings[0]
+        self.assertEqual(top.id, "java-uncaught-game-thread-exception")
+        self.assertEqual(top.severity, "critical")
+        self.assertIn("Index 32767 out of bounds", top.evidence)
+        self.assertIn("Client.updateFacingDirection(Client.java:5400)", top.evidence)
+
+    def test_dead_game_loop_thread_in_thread_dump_detected(self):
+        dump = (
+            "Full thread dump OpenJDK 64-Bit Server VM (25.0.4.1+0):\n"
+            '"XToolkit-Shutdown-Thread" #30 [123] daemon prio=5\n'
+            '"AWT-EventQueue-0" #34 [124] prio=6\n'
+            '"Java Sound Event Dispatcher" #38 [125] daemon prio=5\n'
+            '"Thread-0" #27 [126] daemon prio=1\n'
+        )
+        findings = rd.diagnose({"threads": dump})
+        self.assertIn("java-game-thread-missing", ids(findings))
+
+    def test_alive_game_loop_thread_in_thread_dump_not_flagged(self):
+        dump = (
+            "Full thread dump OpenJDK 64-Bit Server VM (25.0.4.1+0):\n"
+            '"XToolkit-Shutdown-Thread" #30 [123] daemon prio=5\n'
+            '"AWT-EventQueue-0" #34 [124] prio=6\n'
+            '"Java Sound Event Dispatcher" #38 [125] daemon prio=5\n'
+            '"Thread-2" #39 [127] prio=5\n'
+            '\tat jagex2.client.GameShell.run(GameShell.java:731)\n'
+        )
+        findings = rd.diagnose({"threads": dump})
+        self.assertNotIn("java-game-thread-missing", ids(findings))
+
+    def test_classify_and_build_hypotheses_for_joshrs_freeze(self):
+        log = (
+            'Exception in thread "Thread-2" java.lang.ArrayIndexOutOfBoundsException: Index 32767 out of bounds for length 16384\n'
+            '\tat jagex2.client.Client.updateFacingDirection(Client.java:5400)\n'
+        )
+        sysinfo = {"session_type": "wayland", "joshrs_root": "/home/josh/dev/JoshRS/lostcity377"}
+        findings = rd.diagnose({"client": log}, sysinfo)
+        cls = rd.classify_incident(findings, {"server_online": True})
+        self.assertEqual(cls["category"], "application_game_thread_hang")
+        hyps = rd.build_hypotheses(findings, sysinfo, {"client": log}, {"server_online": True})
+        hyp_ids = [h["id"] for h in hyps]
+        self.assertIn("hypothesis-game-thread-exception", hyp_ids)
+        self.assertIn("hypothesis-black-margins-fixed-viewport", hyp_ids)
+        timeline = rd.build_timeline(
+            {"client": log, "journal": "Nov 09 11:07:09 host kwin_wayland[6958]: Failed to allocate a graphics buffer for a swapchain"},
+            "Nov 09 11:13:58 host systemd[1879]: joshrs-client.service: Consumed 26min CPU time",
+        )
+        self.assertGreaterEqual(len(timeline), 3)
+
 
 class SysinfoRuleTests(unittest.TestCase):
     def test_wayland_low_memory_new_java(self):
