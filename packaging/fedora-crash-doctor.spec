@@ -1,5 +1,5 @@
 Name:           fedora-crash-doctor
-Version:        3.2.0
+Version:        3.2.1
 Release:        1%{?dist}
 Summary:        Evidence-weighted crash diagnostics for Fedora
 License:        MIT
@@ -45,6 +45,7 @@ KWin heartbeats, controlled tests, and a locked-down PolicyKit helper.
 install -d %{buildroot}%{_datadir}/fedora-crash-doctor
 install -m 0755 fedora_crash_doctor.py collector.py canary.py desktop_heartbeat.py chrome_capture.py plasma_capture.py autoscan.py host_stability_audit.py %{buildroot}%{_datadir}/fedora-crash-doctor/
 install -m 0755 device_inventory.py freeze_classifiers.py report_schema.py safe_mitigation.py telemetry_timeline.py version.py %{buildroot}%{_datadir}/fedora-crash-doctor/
+install -m 0755 runescape_doctor.py runescape_watchdog.py %{buildroot}%{_datadir}/fedora-crash-doctor/
 install -m 0644 VERSION README.md LICENSE CHANGELOG.md HISTORY.md TODO.md %{buildroot}%{_datadir}/fedora-crash-doctor/
 
 install -d %{buildroot}%{_libexecdir}/fedora-crash-doctor
@@ -67,6 +68,11 @@ cat >%{buildroot}%{_bindir}/fedora-crash-doctor <<'EOF'
 exec /usr/bin/python3 /usr/share/fedora-crash-doctor/fedora_crash_doctor.py "$@"
 EOF
 chmod 0755 %{buildroot}%{_bindir}/fedora-crash-doctor
+cat >%{buildroot}%{_bindir}/fedora-crash-doctor-runescape <<'EOF'
+#!/usr/bin/env bash
+exec /usr/bin/python3 /usr/share/fedora-crash-doctor/runescape_watchdog.py "$@"
+EOF
+chmod 0755 %{buildroot}%{_bindir}/fedora-crash-doctor-runescape
 
 install -d %{buildroot}%{_datadir}/applications
 install -m 0644 packaging/fedora-crash-doctor.desktop %{buildroot}%{_datadir}/applications/
@@ -86,6 +92,7 @@ systemctl --global enable fedora-crash-doctor-stability.path >/dev/null 2>&1 || 
 %license LICENSE
 %doc README.md CHANGELOG.md HISTORY.md TODO.md
 %{_bindir}/fedora-crash-doctor
+%{_bindir}/fedora-crash-doctor-runescape
 %{_datadir}/fedora-crash-doctor/
 %{_libexecdir}/fedora-crash-doctor/
 %{_unitdir}/fedora-crash-doctor-canary.service
@@ -97,6 +104,9 @@ systemctl --global enable fedora-crash-doctor-stability.path >/dev/null 2>&1 || 
 %{_datadir}/applications/fedora-crash-doctor.desktop
 
 %changelog
+* Mon Nov 09 2026 Fedora Crash Doctor contributors <noreply@example.invalid> - 3.2.1-1
+- Add RuneScape / JoshRS #377 Doctor tab, live JVM/thread diagnostics, and watchdog
+
 * Wed Aug 26 2026 Fedora Crash Doctor contributors <noreply@example.invalid> - 3.2.0-1
 - Add host stability audit, explicit CLI, report schema checks and deep scan mode
 

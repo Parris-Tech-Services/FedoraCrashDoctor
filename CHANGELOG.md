@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+- Added a dedicated **RuneScape Doctor** tab and CLI addon (`runescape_doctor.py` and `runescape_watchdog.py`):
+  - Auto-discovers local JoshRS revision-377 installations (`~/dev/JoshRS/lostcity377`, `jagex2.client.Client`, `start-client.sh`, `/tmp/joshrs-client-persistent.log`, and server ports `52402`/`8888`/`8898`).
+  - Detects uncaught Java exceptions on the game loop thread (`Thread-2` dying while AWT/sound threads keep the window open), dead `Thread-2` in live `jcmd`/`jstack` thread dumps, deadlocks, heap OOM, kernel OOM kills, native GL/X11 crashes, KWin Wayland swapchain warnings, and fixed-aspect (`765x503`) black margins.
+  - Produces ranked root-cause hypotheses with supporting/contradicting evidence, incident classifications, and correlated timelines.
+  - Watchdog catches both CPU-idle hangs and crashed game-loop threads, with bounded restarts and profile escalation.
+- Installer, uninstaller and RPM spec ship the new modules plus a `fedora-crash-doctor-runescape` command.
+
 ## 3.2.1 — 2026-08-27
 - Fixed autoscan boot boundary to correctly inspect only the immediately preceding boot.
 - Ensured dynamically generated storage (`storage_*`) and thermal (`thermal`) finding IDs contribute correctly to incident hypotheses.
