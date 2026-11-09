@@ -801,15 +801,15 @@ class MainWindow(QMainWindow):
         self.rs_diagnose_btn = QPushButton("Diagnose RuneScape Client")
         self.rs_diagnose_btn.setStyleSheet("font-weight: bold;")
         self.rs_diagnose_btn.clicked.connect(self.run_runescape_diagnose)
-        self.rs_set_client_btn = QPushButton("Set Client .jar...")
-        self.rs_set_client_btn.clicked.connect(self.set_runescape_client)
+        self.rs_set_client_btn = QPushButton("Start JoshRS Client")
+        self.rs_set_client_btn.clicked.connect(self.start_runescape_client)
         self.rs_watch_btn = QPushButton("Launch RuneScape with Watchdog")
         self.rs_watch_btn.clicked.connect(self.toggle_runescape_watchdog)
         self.rs_status_lbl = QLabel("")
         self.rs_status_lbl.setWordWrap(True)
         self.rs_status_lbl.setStyleSheet("color: #027a48; border: none;")
-        rs_help = QLabel("RuneScape client: launch it under a watchdog that restarts it after a crash or freeze, "
-                         "or diagnose the last one.")
+        rs_help = QLabel("JoshRS #377 / RuneScape client (auto-discovered in ~/dev/JoshRS/lostcity377): "
+                         "start it, launch under the watchdog, or diagnose the latest freeze.")
         rs_help.setWordWrap(True)
         rs_help.setStyleSheet("color: #475467; border: none;")
         rs_layout = QHBoxLayout()
@@ -1078,7 +1078,6 @@ class MainWindow(QMainWindow):
             self.rs_start_client_btn,
             self.rs_stop_client_btn,
             self.rs_tab_watch_btn,
-            self.rs_tab_set_client_btn,
             self.rs_export_btn,
         ):
             btn_row.addWidget(btn)
