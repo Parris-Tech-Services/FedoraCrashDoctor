@@ -32,6 +32,8 @@ install -m 0755 "$SOURCE_DIR/telemetry_timeline.py" "$SHARE_DIR/"
 install -m 0755 "$SOURCE_DIR/version.py" "$SHARE_DIR/"
 install -m 0755 "$SOURCE_DIR/chrome_capture.py" "$SHARE_DIR/"
 install -m 0755 "$SOURCE_DIR/plasma_capture.py" "$SHARE_DIR/"
+install -m 0755 "$SOURCE_DIR/runescape_doctor.py" "$SHARE_DIR/"
+install -m 0755 "$SOURCE_DIR/runescape_watchdog.py" "$SHARE_DIR/"
 install -m 0644 "$SOURCE_DIR/VERSION" "$SHARE_DIR/"
 install -m 0644 "$SOURCE_DIR/README.md" "$SHARE_DIR/"
 install -m 0644 "$SOURCE_DIR/HISTORY.md" "$SHARE_DIR/" 2>/dev/null || true
@@ -50,6 +52,12 @@ cat >/usr/local/bin/fedora-crash-doctor <<EOF
 exec /usr/bin/python3 "$SHARE_DIR/fedora_crash_doctor.py" "\$@"
 EOF
 chmod 0755 /usr/local/bin/fedora-crash-doctor
+
+cat >/usr/local/bin/fedora-crash-doctor-runescape <<EOF
+#!/usr/bin/env bash
+exec /usr/bin/python3 "$SHARE_DIR/runescape_watchdog.py" "\$@"
+EOF
+chmod 0755 /usr/local/bin/fedora-crash-doctor-runescape
 
 install -m 0644 "$SOURCE_DIR/packaging/fedora-crash-doctor.desktop" /usr/share/applications/
 

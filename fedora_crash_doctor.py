@@ -276,6 +276,53 @@ class ChromeCaptureWorker(QObject):
             self.finished.emit({"capture_complete": False, "error": str(e), "failed_collectors": ["all"]})
 
 
+class RuneScapeDiagnoseWorker(QObject):
+    finished = Signal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def run(self):
+        try:
+            import runescape_doctor
+            import runescape_watchdog
+            cfg = runescape_watchdog.load_config()
+            self.finished.emit(runescape_doctor.capture_runescape_incident(
+                java_path=cfg.java_path, extra_dirs=runescape_watchdog.client_dirs(cfg),
+            ))
+        except Exception as e:
+            self.finished.emit({"capture_complete": False, "error": str(e), "failed_collectors": ["all"]})
+
+
+class RuneScapeWatchdogWorker(QObject):
+    event = Signal(str)
+    finished = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.supervisor = None
+        self._stop_requested = False
+
+    def run(self):
+        try:
+            import runescape_watchdog
+            cfg = runescape_watchdog.load_config()
+            self.supervisor = runescape_watchdog.Supervisor(
+                cfg, emit=lambda kind, message: self.event.emit(f"[{kind}] {message}"),
+            )
+            if self._stop_requested:
+                self.supervisor.stop()
+            self.finished.emit(self.supervisor.run())
+        except Exception as e:
+            self.event.emit(f"[error] {e}")
+            self.finished.emit(2)
+
+    def stop(self):
+        self._stop_requested = True
+        if self.supervisor is not None:
+            self.supervisor.stop()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -749,6 +796,30 @@ class MainWindow(QMainWindow):
         chrome_layout.addStretch()
         capture_layout.addLayout(chrome_layout)
 
+        self.rs_watch_running = False
+        self.rs_diagnose_btn = QPushButton("Diagnose RuneScape Client")
+        self.rs_diagnose_btn.setStyleSheet("font-weight: bold;")
+        self.rs_diagnose_btn.clicked.connect(self.run_runescape_diagnose)
+        self.rs_set_client_btn = QPushButton("Set Client .jar...")
+        self.rs_set_client_btn.clicked.connect(self.set_runescape_client)
+        self.rs_watch_btn = QPushButton("Launch RuneScape with Watchdog")
+        self.rs_watch_btn.clicked.connect(self.toggle_runescape_watchdog)
+        self.rs_status_lbl = QLabel("")
+        self.rs_status_lbl.setWordWrap(True)
+        self.rs_status_lbl.setStyleSheet("color: #027a48; border: none;")
+        rs_help = QLabel("RuneScape client: launch it under a watchdog that restarts it after a crash or freeze, "
+                         "or diagnose the last one.")
+        rs_help.setWordWrap(True)
+        rs_help.setStyleSheet("color: #475467; border: none;")
+        rs_layout = QHBoxLayout()
+        rs_layout.addWidget(self.rs_diagnose_btn)
+        rs_layout.addWidget(self.rs_set_client_btn)
+        rs_layout.addWidget(self.rs_watch_btn)
+        rs_layout.addStretch()
+        capture_layout.addWidget(rs_help)
+        capture_layout.addLayout(rs_layout)
+        capture_layout.addWidget(self.rs_status_lbl)
+
         layout.addWidget(capture_frame)
 
         load_btn = QPushButton("Load Full History...")
@@ -952,6 +1023,110 @@ class MainWindow(QMainWindow):
         msg.exec()
         if msg.clickedButton() == open_btn and summary.get("capture_path"):
             QDesktopServices.openUrl(QUrl.fromLocalFile(summary["capture_path"]))
+
+    def run_runescape_diagnose(self) -> None:
+        self.rs_diagnose_btn.setEnabled(False)
+        self.rs_diagnose_btn.setText("Diagnosing RuneScape client...")
+        self.rs_status_lbl.setText("Reading logs, journals and crash dumps...")
+
+        from PySide6.QtCore import QThread
+        self.rs_diagnose_thread = QThread()
+        self.rs_diagnose_worker = RuneScapeDiagnoseWorker()
+        self.rs_diagnose_worker.moveToThread(self.rs_diagnose_thread)
+        self.rs_diagnose_thread.started.connect(self.rs_diagnose_worker.run)
+        self.rs_diagnose_worker.finished.connect(self.on_runescape_diagnose_finished)
+        self.rs_diagnose_worker.finished.connect(self.rs_diagnose_thread.quit)
+        self.rs_diagnose_worker.finished.connect(self.rs_diagnose_worker.deleteLater)
+        self.rs_diagnose_thread.finished.connect(self.rs_diagnose_thread.deleteLater)
+        self.rs_diagnose_thread.start()
+
+    def on_runescape_diagnose_finished(self, summary: dict) -> None:
+        self.rs_diagnose_btn.setEnabled(True)
+        self.rs_diagnose_btn.setText("Diagnose RuneScape Client")
+        if not summary.get("capture_complete"):
+            self.rs_status_lbl.setText(f"Diagnosis failed: {summary.get('error', 'Unknown')}")
+            return
+
+        findings = summary.get("findings", [])
+        failed = summary.get("failed_collectors", [])
+        status = f"{len(findings)} possible cause(s) found." if findings else "No known cause matched the evidence."
+        if failed:
+            status += f" {len(failed)} data source(s) unavailable: {', '.join(failed)}."
+        self.rs_status_lbl.setText(status)
+        lines = [status, f"Output path: {summary.get('capture_path')}", ""]
+        for number, item in enumerate(findings[:6], 1):
+            lines.append(f"{number}. [{str(item.get('severity', '')).upper()}] {item.get('title')}")
+            lines.append(f"   Try: {item.get('fix')}")
+        msg = QMessageBox(self)
+        msg.setWindowTitle("RuneScape client diagnosis")
+        msg.setText("\n".join(lines))
+        open_btn = msg.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
+        msg.addButton(QMessageBox.StandardButton.Ok)
+        msg.exec()
+        if msg.clickedButton() == open_btn and summary.get("capture_path"):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(summary["capture_path"]))
+
+    def set_runescape_client(self) -> None:
+        import runescape_watchdog
+        cfg = runescape_watchdog.load_config()
+        if cfg.custom_command:
+            answer = QMessageBox.question(
+                self, "Replace custom command?",
+                "A custom launch command is saved and currently takes priority over a .jar. "
+                "Replace it with the .jar you pick?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        start = str(Path(cfg.jar_path).expanduser().parent) if cfg.jar_path else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select the RuneScape client .jar", start, "Java archives (*.jar);;All files (*)",
+        )
+        if not path:
+            return
+        cfg.jar_path = path
+        cfg.custom_command = []
+        runescape_watchdog.save_config(cfg)
+        self.rs_status_lbl.setText(f"Client set to {path}")
+
+    def toggle_runescape_watchdog(self) -> None:
+        if self.rs_watch_running:
+            self.rs_watch_worker.stop()
+            self.rs_watch_btn.setEnabled(False)
+            self.rs_status_lbl.setText("Stopping watchdog. The client keeps running.")
+            return
+
+        import runescape_watchdog
+        if not runescape_watchdog.load_config().has_client():
+            self.rs_status_lbl.setText("No client configured yet. Use 'Set Client .jar...' first.")
+            return
+
+        self.rs_watch_running = True
+        self.rs_watch_btn.setText("Stop Watchdog")
+        self.rs_status_lbl.setText("Starting RuneScape under the watchdog...")
+
+        from PySide6.QtCore import QThread
+        self.rs_watch_thread = QThread()
+        self.rs_watch_worker = RuneScapeWatchdogWorker()
+        self.rs_watch_worker.moveToThread(self.rs_watch_thread)
+        self.rs_watch_thread.started.connect(self.rs_watch_worker.run)
+        self.rs_watch_worker.event.connect(self.on_runescape_event)
+        self.rs_watch_worker.finished.connect(self.on_runescape_watchdog_finished)
+        self.rs_watch_worker.finished.connect(self.rs_watch_thread.quit)
+        self.rs_watch_worker.finished.connect(self.rs_watch_worker.deleteLater)
+        self.rs_watch_thread.finished.connect(self.rs_watch_thread.deleteLater)
+        self.rs_watch_thread.start()
+
+    def on_runescape_event(self, text: str) -> None:
+        self.rs_status_lbl.setText(text[:400])
+
+    def on_runescape_watchdog_finished(self, code: int) -> None:
+        self.rs_watch_running = False
+        self.rs_watch_btn.setEnabled(True)
+        self.rs_watch_btn.setText("Launch RuneScape with Watchdog")
+        if code == 0:
+            self.rs_status_lbl.setText("Watchdog finished.")
+        elif code == 1:
+            self.rs_status_lbl.setText("Watchdog gave up after repeated failures. Run 'Diagnose RuneScape Client' for the likely cause.")
 
     def build_tests_tab(self) -> None:
         page = QWidget(); layout = QVBoxLayout(page)
@@ -1775,6 +1950,10 @@ body{{font-family:system-ui;max-width:1180px;margin:30px auto;padding:0 18px;bac
         Path(path).write_text(self.redact(document)); QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def closeEvent(self, event) -> None:
+        if self.rs_watch_running:
+            self.rs_watch_worker.stop()
+            self.rs_watch_thread.quit()
+            self.rs_watch_thread.wait(3000)
         if self.broker.ready: self.broker.cancel_all()
         super().closeEvent(event)
 

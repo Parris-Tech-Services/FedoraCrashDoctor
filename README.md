@@ -38,6 +38,44 @@ controlled A/B experiments, monitoring-only signals, and explanations not
 supported by current evidence. It does not install packages, change kernel
 parameters, restart services, kill processes, or run destructive tests.
 
+## RuneScape client addon
+
+For a RuneScape (RS2) Java client that keeps crashing or freezing. Three parts:
+
+- **Diagnose** (`runescape_doctor.py`, read-only): reads the client log, JVM
+  `hs_err_pid*.log` reports, the kernel/user journal and `coredumpctl`, matches
+  them against known causes (heap exhaustion, kernel OOM kills, native crashes
+  inside GL/X11 libraries, GPU hangs, missing libraries, Java version mismatch,
+  deadlocks) and saves a report under `~/.local/share/FedoraCrashDoctor/captures/`.
+- **Launch** (`runescape_watchdog.py`): starts the client under a profile of
+  Java2D/graphics flags (`default`, `stable-graphics`, `xwayland-safe`,
+  `software`, `low-memory`) and logs its output.
+- **Watchdog**: restarts the client when it crashes or freezes, saves a diagnosis
+  each time, and after repeated failures steps through the graphics profiles
+  automatically. A frozen client gets a thread dump (`jcmd`) before it is stopped.
+
+In the GUI these are on the System History tab, next to the Chrome capture.
+From a terminal:
+
+```bash
+python3 runescape_watchdog.py config --jar ~/games/rs2/client.jar
+python3 runescape_watchdog.py run                 # launch and keep alive
+python3 runescape_watchdog.py watch               # watch a client that is already running
+python3 runescape_watchdog.py diagnose            # read-only diagnosis of the latest incident
+python3 runescape_watchdog.py profiles
+```
+
+Settings live in `~/.config/fedora-crash-doctor/runescape.json`; logs in
+`~/.local/state/fedora-crash-doctor/runescape/`. Set `custom_command` (use
+`{jvm}` where the profile flags should go) if the client isn't a plain `-jar`.
+
+Limits: freeze detection means "no CPU activity for `freeze_seconds`" (default
+45), so a client stuck in a busy loop is not caught. The graphics profiles are
+common mitigations, not guaranteed fixes. The watchdog only ever starts or
+stops the client you configured (or the single PID you pass to `watch`); stopping
+the watchdog leaves the client running. Diagnosis rules are heuristics: read the
+evidence line before acting on a suggested fix.
+
 ## CLI examples
 
 Running `fedora_crash_doctor.py` with no arguments launches the GUI. Terminal

@@ -13,6 +13,7 @@ rm -f /usr/lib/systemd/user/fedora-crash-doctor-desktop-heartbeat.service
 rm -f /usr/share/polkit-1/actions/org.fedoracrashdoctor.policy
 rm -f /usr/share/applications/fedora-crash-doctor.desktop
 rm -f /usr/local/bin/fedora-crash-doctor
+rm -f /usr/local/bin/fedora-crash-doctor-runescape
 rm -rf /usr/share/fedora-crash-doctor /usr/libexec/fedora-crash-doctor
 systemctl daemon-reload
 update-desktop-database /usr/share/applications >/dev/null 2>&1 || true

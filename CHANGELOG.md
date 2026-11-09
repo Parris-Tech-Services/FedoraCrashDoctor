@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- Added a RuneScape client addon: `runescape_doctor.py` (read-only crash/freeze diagnosis from client logs,
+  JVM `hs_err` reports, journal and coredumps), `runescape_watchdog.py` (launcher with graphics profiles, freeze
+  watchdog, auto-restart with profile escalation, CLI), and a RuneScape row on the System History tab.
+- Installer, uninstaller and RPM spec ship the new modules plus a `fedora-crash-doctor-runescape` command.
+
 ## 3.2.1 — 2026-08-27
 - Fixed autoscan boot boundary to correctly inspect only the immediately preceding boot.
 - Ensured dynamically generated storage (`storage_*`) and thermal (`thermal`) finding IDs contribute correctly to incident hypotheses.
