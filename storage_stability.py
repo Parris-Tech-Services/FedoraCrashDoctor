@@ -63,18 +63,18 @@ def is_qlc_model(model: str) -> bool:
     return any(marker in upper for marker in QLC_MODEL_MARKERS)
 
 
-def _physical_block_devices(name: str, sys_root: str, seen: set[str] | None = None) -> list[dict[str, str]]:
+def _physical_block_devices(name: str, sys_root: str, seen: set[str] | None = None, node_path: Path | None = None) -> list[dict[str, str]]:
     """Resolve partitions and device-mapper layers to physical block devices."""
     seen = set(seen or ())
     if name in seen:
         return []
     seen.add(name)
-    node = Path(sys_root) / "class" / "block" / name
+    node = node_path if node_path is not None else Path(sys_root) / "class" / "block" / name
     if not node.exists():
         return []
     resolved = Path(os.path.realpath(node))
     if (resolved / "partition").exists():
-        return _physical_block_devices(resolved.parent.name, sys_root, seen)
+        return _physical_block_devices(resolved.parent.name, sys_root, seen, resolved.parent)
 
     try:
         model = (resolved / "device" / "model").read_text().strip()
@@ -87,7 +87,7 @@ def _physical_block_devices(name: str, sys_root: str, seen: set[str] | None = No
     if slaves.is_dir():
         devices: list[dict[str, str]] = []
         for slave in sorted(slaves.iterdir(), key=lambda item: item.name):
-            devices.extend(_physical_block_devices(slave.name, sys_root, seen))
+            devices.extend(_physical_block_devices(slave.name, sys_root, seen, slave))
         if devices:
             return devices
     return [{"disk": resolved.name, "model": ""}]
