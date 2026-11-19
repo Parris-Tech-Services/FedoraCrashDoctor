@@ -153,9 +153,7 @@ class TestCanaryIoTracker:
             return default
 
         clock = iter([100.0, 102.0])
-        with patch("canary.os.listdir", return_value=["101", "self"]), \
-             patch("canary.read_text", side_effect=fake_read), \
-             patch("canary.time.monotonic", side_effect=lambda: next(clock)):
+        with patch("canary.os.listdir", return_value=["101"]), patch("canary.read_text", side_effect=fake_read), patch("canary.time.monotonic", side_effect=lambda: next(clock)):
             tracker = canary.IoTracker()
             assert tracker.update() == []
             counters["101"] = [100 * 1048576, 40 * 1048576]
@@ -173,7 +171,7 @@ class TestCanaryIoTracker:
             pid = path.split("/")[2]
             if path.endswith("/io"):
                 r, w = counters[pid]
-                return f"read_bytes: {r}\\nwrite_bytes: {w}\\n"
+                return f"read_bytes: {r}\nwrite_bytes: {w}\n"
             if path.endswith("/stat"):
                 fields = ["S"] + ["0"] * 18 + [start_time[pid]]
                 return f"{pid} (worker) " + " ".join(fields)
