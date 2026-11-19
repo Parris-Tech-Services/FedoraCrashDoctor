@@ -1689,12 +1689,12 @@ def collect(
     from stability_playbook import build_playbook
     timeline = build_timeline(checks)
     canary = analyse_canary(checks)
-    # Storage stalls that aren't drive failures (QLC fill level, desktop in
-    # disk swap, the process saturating the disk) need canary samples, so
-    # they're added here, before freeze classification and the playbook.
+    # Freeze classification consumes failure evidence only. Storage
+    # capacity/throughput measurements are appended afterwards so ordinary
+    # process names cannot be misread as crash or compositor failures.
+    freeze_classes = classify_freeze_evidence(findings, canary)
     from storage_stability import analyse_storage_stability
     findings.extend(analyse_storage_stability(canary))
-    freeze_classes = classify_freeze_evidence(findings, canary)
     telemetry_timeline = build_telemetry_timeline(canary.get("samples", []))
     incidents, boot_warnings, unresolved = build_incidents(findings, checks)
     overall, hypotheses = build_overall(incidents, boot_warnings)
