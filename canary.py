@@ -9,8 +9,10 @@ from __future__ import annotations
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import math
 import os
 import re
+import stat
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -210,7 +212,6 @@ class IoTracker:
                 top.append({
                     "pid": pid,
                     "name": stat[stat.find("(") + 1:stat.rfind(")")] if "(" in stat else "",
-                    "cmd": read_text(f"/proc/{pid}/cmdline").replace("\0", " ").strip()[:100],
                     "read_mb_s": round(read_rate / 1048576, 1),
                     "write_mb_s": round(write_rate / 1048576, 1),
                     "unit": _unit_from_cgroup(read_text(f"/proc/{pid}/cgroup")),
@@ -332,16 +333,103 @@ def average_cpu_mhz() -> float | None:
     return round(sum(values) / len(values), 1) if values else None
 
 
+HEARTBEAT_MAX_BYTES = 64 * 1024
+
+
+def _read_desktop_heartbeat(runtime_root: Path, uid: int) -> tuple[dict[str, Any], float] | None:
+    """Read one user heartbeat without following links or blocking on special files.
+
+    The directory tree and file are user-writable. O_NOFOLLOW protects every
+    component, O_NONBLOCK makes FIFO substitution harmless, and fstat ensures
+    only a bounded regular file owned by the expected user is parsed.
+    """
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    opened: list[int] = []
+    try:
+        root_fd = os.open(runtime_root, directory_flags)
+        opened.append(root_fd)
+        user_fd = os.open(str(uid), directory_flags, dir_fd=root_fd)
+        opened.append(user_fd)
+        user_stat = os.fstat(user_fd)
+        if not stat.S_ISDIR(user_stat.st_mode) or user_stat.st_uid != uid:
+            return None
+
+        app_fd = os.open("fedora-crash-doctor", directory_flags, dir_fd=user_fd)
+        opened.append(app_fd)
+        app_stat = os.fstat(app_fd)
+        if not stat.S_ISDIR(app_stat.st_mode) or app_stat.st_uid != uid:
+            return None
+
+        file_fd = os.open("desktop-heartbeat.json", file_flags, dir_fd=app_fd)
+        opened.append(file_fd)
+        file_stat = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_uid != uid
+            or file_stat.st_size > HEARTBEAT_MAX_BYTES
+        ):
+            return None
+
+        with os.fdopen(file_fd, "rb") as stream:
+            opened.remove(file_fd)
+            raw = stream.read(HEARTBEAT_MAX_BYTES + 1)
+        if len(raw) > HEARTBEAT_MAX_BYTES:
+            return None
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            return None
+        return data, file_stat.st_mtime
+    except (OSError, ValueError, UnicodeError, json.JSONDecodeError):
+        return None
+    finally:
+        for fd in reversed(opened):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def desktop_heartbeat() -> dict[str, Any]:
     now = time.time()
     newest = None
-    for path in Path("/run/user").glob("[0-9]*/fedora-crash-doctor/desktop-heartbeat.json"):
+    runtime_root = Path("/run/user")
+    try:
+        root_fd = os.open(
+            runtime_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError:
+        root_fd = None
+    if root_fd is not None:
         try:
-            data = json.loads(path.read_text())
-            stamp = float(data.get("epoch", path.stat().st_mtime))
-            if newest is None or stamp > newest[0]:
-                newest = (stamp, data)
-        except Exception: pass
+            for uid_name in os.listdir(root_fd):
+                if not uid_name.isdigit():
+                    continue
+                record = _read_desktop_heartbeat(runtime_root, int(uid_name))
+                if record is None:
+                    continue
+                data, modified = record
+                try:
+                    stamp = float(data.get("epoch", modified))
+                except (TypeError, ValueError):
+                    stamp = modified
+                if not math.isfinite(stamp):
+                    stamp = modified
+                if newest is None or stamp > newest[0]:
+                    newest = (stamp, data)
+        finally:
+            os.close(root_fd)
     if not newest:
         return {"desktop_heartbeat_age_s": None, "kwin_ok": None, "kwin_ping_ms": None, "kwin_consecutive_failures": None, "plasmashell_ok": None, "desktop_session": None, "desktop": None}
     stamp, data = newest
@@ -354,7 +442,6 @@ def desktop_heartbeat() -> dict[str, Any]:
         "desktop_session": data.get("session"),
         "desktop": data.get("desktop"),
     }
-
 
 def chrome_summary() -> dict[str, Any]:
     processes = []
