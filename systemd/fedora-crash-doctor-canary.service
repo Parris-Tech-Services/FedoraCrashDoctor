@@ -11,7 +11,11 @@ Nice=19
 IOSchedulingClass=idle
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
+# tmpfs (not yes) so /run/user can be re-exposed read-only: the canary
+# reads the desktop heartbeat from /run/user/<uid>/fedora-crash-doctor/.
+# ProtectHome=yes hides /run/user too, so KWin/heartbeat fields were always null.
+ProtectHome=tmpfs
+BindReadOnlyPaths=-/run/user
 PrivateTmp=yes
 ReadWritePaths=/var/log/fedora-crash-doctor
 

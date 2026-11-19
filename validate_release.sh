@@ -5,7 +5,7 @@
 # This deliberately never installs anything (no sudo, no dnf, no rpm -i).
 # Run ./install_dependencies.sh first if you want fewer SKIPs.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -111,7 +111,13 @@ echo "--- RPM packaging ---"
 RPM_PATH=""
 if command -v rpmbuild >/dev/null 2>&1 && command -v rpmdev-setuptree >/dev/null 2>&1; then
   if ./build_rpm.sh >/tmp/fcd-build-rpm.log 2>&1; then
-    RPM_PATH="$(ls -t "$HOME"/rpmbuild/RPMS/noarch/fedora-crash-doctor-*.rpm 2>/dev/null | head -1)"
+    # Select the newest RPM without parsing ls output (safe for whitespace).
+    for rpm in "$HOME"/rpmbuild/RPMS/noarch/fedora-crash-doctor-*.rpm; do
+      [ -f "$rpm" ] || continue
+      if [ -z "$RPM_PATH" ] || [ "$rpm" -nt "$RPM_PATH" ]; then
+        RPM_PATH="$rpm"
+      fi
+    done
     if [ -n "$RPM_PATH" ]; then
       pass "RPM build ($RPM_PATH)"
     else

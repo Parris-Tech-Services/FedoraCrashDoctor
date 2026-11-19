@@ -76,4 +76,25 @@ def build_playbook(findings: list[dict[str, Any]], checks: dict[str, Any] | None
         "Suppresses desktop notification popups while retaining canary and report files.",
         ["Create ~/.config/fedora-crash-doctor/silent", "Leave the canary and desktop heartbeat enabled"],
     ))
+    if "storage_qlc_nearly_full" in ids:
+        actions.append(_action(
+            "storage_free_space",
+            "Free space on the root filesystem",
+            "The root filesystem is nearly full. Freeing rebuildable files can restore working space, but this does not establish whole-SSD fullness or SLC-cache capacity.",
+            [
+                "Check what is large: du -xh --max-depth=1 ~ | sort -rh | head -20",
+                "Remove rebuildable caches you do not need (for example npm cache, old node_modules or .next build folders)",
+                "Move finished archives and VM/profile disks only when you have verified another safe copy",
+            ],
+        ))
+    if {"storage_qlc_nearly_full", "storage_io_culprit"} & ids:
+        actions.append(_action(
+            "storage_run_heavy_jobs_gently",
+            "Run heavy jobs with lower I/O priority",
+            "Lowering the job's I/O priority can leave more storage service time for the desktop without guessing which physical device is busy.",
+            [
+                "Run a new command at idle I/O priority: ionice -c2 -n7 -- <command>",
+                "For a supported user systemd scope: systemd-run --user --scope -p IOWeight=10 -- <command>",
+            ],
+        ))
     return actions

@@ -46,7 +46,7 @@ KWin heartbeats, controlled tests, and a locked-down PolicyKit helper.
 install -d %{buildroot}%{_datadir}/fedora-crash-doctor
 install -m 0755 fedora_crash_doctor.py collector.py canary.py desktop_heartbeat.py chrome_capture.py plasma_capture.py autoscan.py host_stability_audit.py %{buildroot}%{_datadir}/fedora-crash-doctor/
 install -m 0755 device_inventory.py freeze_classifiers.py report_schema.py safe_mitigation.py telemetry_timeline.py version.py %{buildroot}%{_datadir}/fedora-crash-doctor/
-install -m 0644 app_crash_doctor.py symbolic_analysis.py incident_model.py incident_observations.py change_correlation.py incident_fingerprint.py confidence_explanation.py incident_history.py canary_incident_join.py stability_playbook.py reliability_summary.py coredump_adapter.py graphics_doctor.py hardware_doctor.py memory_oom.py dadlan_doctor.py %{buildroot}%{_datadir}/fedora-crash-doctor/
+install -m 0644 app_crash_doctor.py symbolic_analysis.py incident_model.py incident_observations.py change_correlation.py incident_fingerprint.py confidence_explanation.py incident_history.py canary_incident_join.py stability_playbook.py storage_stability.py reliability_summary.py coredump_adapter.py graphics_doctor.py hardware_doctor.py memory_oom.py dadlan_doctor.py %{buildroot}%{_datadir}/fedora-crash-doctor/
 install -m 0644 VERSION README.md LICENSE CHANGELOG.md HISTORY.md TODO.md %{buildroot}%{_datadir}/fedora-crash-doctor/
 
 install -d %{buildroot}%{_libexecdir}/fedora-crash-doctor
