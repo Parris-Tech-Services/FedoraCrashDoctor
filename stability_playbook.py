@@ -76,33 +76,25 @@ def build_playbook(findings: list[dict[str, Any]], checks: dict[str, Any] | None
         "Suppresses desktop notification popups while retaining canary and report files.",
         ["Create ~/.config/fedora-crash-doctor/silent", "Leave the canary and desktop heartbeat enabled"],
     ))
-    if {"storage_qlc_nearly_full", "storage_io_culprit", "storage_desktop_in_disk_swap"} & ids:
-        actions.extend([
-            _action(
-                "storage_free_space",
-                "Free disk space to at least 20-25%",
-                "QLC SSDs keep a larger fast write cache when emptier, so sustained writes stop stalling the system.",
-                [
-                    "Check what is large: du -xh --max-depth=1 ~ | sort -rh | head -20",
-                    "Remove rebuildable caches you don't need (e.g. npm cache clean --force, old node_modules / .next build folders)",
-                    "Move finished archives (e.g. extracted .zip files) and VM/profile disks to external storage",
-                ],
-            ),
-            _action(
-                "storage_run_heavy_jobs_gently",
-                "Run big copies, extractions and builds with a disk bandwidth cap",
-                "A capped job still finishes, but leaves disk time for the desktop and its swap.",
-                [
-                    "systemd-run --user --scope -p IOReadBandwidthMax='/dev/nvme0n1 40M' -p IOWriteBandwidthMax='/dev/nvme0n1 30M' -- <command>",
-                    "Cap an app that is already running (until it exits): systemctl --user set-property --runtime <unit from the finding> IOWriteBandwidthMax='/dev/nvme0n1 20M'",
-                ],
-            ),
-        ])
-    if "storage_desktop_in_disk_swap" in ids:
+    if "storage_qlc_nearly_full" in ids:
         actions.append(_action(
-            "storage_refresh_swapped_desktop",
-            "Bring the panel back into RAM after a heavy-I/O period",
-            "Restarting plasmashell reloads it into RAM; windows and apps keep running.",
-            ["systemctl --user restart plasma-plasmashell.service"],
+            "storage_free_space",
+            "Free space on the root filesystem",
+            "The root filesystem is nearly full. Freeing rebuildable files can restore working space, but this does not establish whole-SSD fullness or SLC-cache capacity.",
+            [
+                "Check what is large: du -xh --max-depth=1 ~ | sort -rh | head -20",
+                "Remove rebuildable caches you do not need (for example npm cache, old node_modules or .next build folders)",
+                "Move finished archives and VM/profile disks only when you have verified another safe copy",
+            ],
+        ))
+    if {"storage_qlc_nearly_full", "storage_io_culprit"} & ids:
+        actions.append(_action(
+            "storage_run_heavy_jobs_gently",
+            "Run heavy jobs with lower I/O priority",
+            "Lowering the job's I/O priority can leave more storage service time for the desktop without guessing which physical device is busy.",
+            [
+                "Run a new command at idle I/O priority: ionice -c2 -n7 -- <command>",
+                "For a supported user systemd scope: systemd-run --user --scope -p IOWeight=10 -- <command>",
+            ],
         ))
     return actions
