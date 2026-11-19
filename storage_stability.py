@@ -17,8 +17,10 @@ All three are performance findings, not evidence of a failing drive.
 """
 from __future__ import annotations
 
+import math
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,10 +42,10 @@ DESKTOP_SWAP_WARN_MB = 150
 IO_STALL_PSI_FULL = 15.0
 
 # Findings from this module describe performance, not drive health.
-PERFORMANCE_FINDING_IDS = {"storage_qlc_nearly_full", "storage_desktop_in_disk_swap", "storage_io_culprit"}
+PERFORMANCE_FINDING_IDS = {"storage_qlc_nearly_full", "storage_desktop_swap_possible", "storage_io_culprit"}
 
 
-def _finding(finding_id: str, severity: str, category: str, title: str, explanation: str, evidence: list[str], confidence: str = "moderate") -> dict[str, Any]:
+def _finding(finding_id: str, severity: str, category: str, title: str, explanation: str, evidence: list[str], confidence: str = "moderate", scope: str = "current") -> dict[str, Any]:
     return {
         "id": finding_id,
         "severity": severity,
@@ -51,7 +53,7 @@ def _finding(finding_id: str, severity: str, category: str, title: str, explanat
         "title": title,
         "explanation": explanation,
         "evidence": evidence,
-        "scope": "current",
+        "scope": scope,
         "confidence": confidence,
     }
 
@@ -61,11 +63,42 @@ def is_qlc_model(model: str) -> bool:
     return any(marker in upper for marker in QLC_MODEL_MARKERS)
 
 
-def root_disk(mountinfo: str | None = None, sys_root: str = "/sys") -> dict[str, str] | None:
-    """Whole-disk name and model behind the root filesystem, from sysfs.
+def _physical_block_devices(name: str, sys_root: str, seen: set[str] | None = None) -> list[dict[str, str]]:
+    """Resolve partitions and device-mapper layers to physical block devices."""
+    seen = set(seen or ())
+    if name in seen:
+        return []
+    seen.add(name)
+    node = Path(sys_root) / "class" / "block" / name
+    if not node.exists():
+        return []
+    resolved = Path(os.path.realpath(node))
+    if (resolved / "partition").exists():
+        return _physical_block_devices(resolved.parent.name, sys_root, seen)
 
-    Uses the mount source (e.g. /dev/nvme0n1p3) rather than the major:minor
-    field, which btrfs reports as an anonymous 0:N device.
+    try:
+        model = (resolved / "device" / "model").read_text().strip()
+    except OSError:
+        model = ""
+    if model:
+        return [{"disk": resolved.name, "model": model}]
+
+    slaves = resolved / "slaves"
+    if slaves.is_dir():
+        devices: list[dict[str, str]] = []
+        for slave in sorted(slaves.iterdir(), key=lambda item: item.name):
+            devices.extend(_physical_block_devices(slave.name, sys_root, seen))
+        if devices:
+            return devices
+    return [{"disk": resolved.name, "model": ""}]
+
+
+def root_disk(mountinfo: str | None = None, sys_root: str = "/sys") -> dict[str, str] | None:
+    """Resolve the root mount source through partitions, LUKS and LVM to a disk.
+
+    The mount source is used instead of mountinfo's major:minor field, which
+    btrfs may report as an anonymous device. Device-mapper nodes are followed
+    through their sysfs slaves links to their physical backing devices.
     """
     if mountinfo is None:
         try:
@@ -81,18 +114,13 @@ def root_disk(mountinfo: str | None = None, sys_root: str = "/sys") -> dict[str,
     if not source or not source.startswith("/dev/"):
         return None
     name = os.path.basename(os.path.realpath(source))
-    node = Path(sys_root) / "class" / "block" / name
-    if not node.exists():
+    devices = _physical_block_devices(name, sys_root)
+    if not devices:
         return None
-    disk = Path(os.path.realpath(node))
-    if (disk / "partition").exists():
-        disk = disk.parent
-    try:
-        model = (disk / "device" / "model").read_text().strip()
-    except OSError:
-        model = ""
-    return {"disk": disk.name, "model": model}
-
+    # Prefer a positively identified QLC backing disk if a mapped root spans
+    # more than one physical device; otherwise use the first resolved leaf.
+    selected = next((item for item in devices if is_qlc_model(item.get("model", ""))), devices[0])
+    return {"disk": selected["disk"], "model": selected["model"]}
 
 def disk_swap_in_use(swaps: str | None = None) -> list[dict[str, Any]]:
     """Swap areas on real storage (not zram) that currently hold pages."""
@@ -115,6 +143,7 @@ def disk_swap_in_use(swaps: str | None = None) -> list[dict[str, Any]]:
 
 
 def qlc_fill_finding(model: str, total_bytes: int, used_bytes: int) -> dict[str, Any] | None:
+    """Report root-filesystem capacity, not whole-SSD or NAND cache fullness."""
     if not is_qlc_model(model) or total_bytes <= 0:
         return None
     used_pct = used_bytes / total_bytes * 100
@@ -125,40 +154,78 @@ def qlc_fill_finding(model: str, total_bytes: int, used_bytes: int) -> dict[str,
         "storage_qlc_nearly_full",
         "warning",
         "Storage",
-        "QLC SSD is nearly full, so large writes can stall the whole system",
-        "This drive uses QLC flash with a fast SLC write cache that shrinks as the drive fills. "
-        "A large sustained write (extracting archives, installing node_modules, copying VM or profile disks) "
-        "exhausts it, write latency rises sharply, and swap, btrfs commits and the desktop wait behind it. "
-        "Keeping at least 20-25% free restores most of the cache. This is a capacity and performance issue, not a failing drive.",
-        [f"Root drive model: {model}", f"Root filesystem {used_pct:.0f}% used ({free_gib:.0f} GiB free)"],
-        confidence="high",
+        "QLC-backed root filesystem is nearly full",
+        "The root filesystem is on a QLC SSD and is itself nearly full, which can constrain writes and temporary working space on this filesystem. "
+        "Filesystem usage does not reveal how full the whole physical SSD is or how much SLC write cache remains, so this is a root-filesystem capacity warning only. "
+        "It is not evidence of a failing drive.",
+        [f"Root backing device model: {model}", f"Root filesystem {used_pct:.0f}% used ({free_gib:.0f} GiB free)"],
+        confidence="moderate",
     )
 
-
-def desktop_swap_finding(samples: list[dict[str, Any]], disk_swaps: list[dict[str, Any]]) -> dict[str, Any] | None:
+def desktop_swap_finding(
+    samples: list[dict[str, Any]],
+    disk_swaps: list[dict[str, Any]],
+    *,
+    current_boot_id: str | None = None,
+    now_epoch: float | None = None,
+    max_age_seconds: int = 30,
+) -> dict[str, Any] | None:
+    """Report only a possible swap risk; VmSwap cannot identify its backing device."""
     if not disk_swaps:
         return None
-    latest = next((s for s in reversed(samples) if isinstance((s.get("processes") or {}).get("top_swap"), list)), None)
+    if current_boot_id is None:
+        try:
+            current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        except OSError:
+            return None
+    if not current_boot_id:
+        return None
+    now_epoch = time.time() if now_epoch is None else now_epoch
+
+    latest = None
+    for sample in reversed(samples):
+        if sample.get("boot_id") != current_boot_id:
+            continue
+        try:
+            stamp = float(sample.get("epoch"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(stamp) or stamp > now_epoch or now_epoch - stamp > max_age_seconds:
+            continue
+        top_swap = (sample.get("processes") or {}).get("top_swap")
+        if isinstance(top_swap, list):
+            latest = sample
+            break
     if not latest:
         return None
-    desktop = [p for p in latest["processes"]["top_swap"] if isinstance(p, dict) and p.get("name") in DESKTOP_PROCESSES]
+
+    desktop = [
+        p for p in latest["processes"]["top_swap"]
+        if isinstance(p, dict) and p.get("name") in DESKTOP_PROCESSES
+    ]
     swapped_mb = sum(int(p.get("swap_kb") or 0) for p in desktop) // 1024
     if swapped_mb < DESKTOP_SWAP_WARN_MB:
         return None
-    lines = [f"{p.get('name')}: {int(p.get('swap_kb') or 0) // 1024} MB swapped, {int(p.get('rss_kb') or 0) // 1024} MB in RAM" for p in desktop if p.get("swap_kb")]
-    lines += [f"Disk-backed swap in use: {s['device']} ({s['used_mb']} MB)" for s in disk_swaps]
-    lines.append(f"Sample time: {latest.get('ts', 'unknown')}")
-    return _finding(
-        "storage_desktop_in_disk_swap",
-        "warning",
-        "Memory",
-        "Desktop processes are swapped out, so disk stalls freeze the panel and compositor",
-        "Part of the desktop's memory has been pushed to swap and some of it overflowed onto the disk swapfile. "
-        "When the disk is busy, plasmashell and KWin must wait for the disk to read their own memory back, which looks like a frozen desktop "
-        "even though plenty of RAM is free.",
-        lines,
-    )
 
+    lines = [
+        f"{p.get('name')}: {int(p.get('swap_kb') or 0) // 1024} MB total swapped, {int(p.get('rss_kb') or 0) // 1024} MB in RAM"
+        for p in desktop if p.get("swap_kb")
+    ]
+    lines += [f"Disk-backed swap is in use system-wide: {s['device']} ({s['used_mb']} MB)" for s in disk_swaps]
+    lines.append(f"Sample time: {latest.get('ts', 'unknown')}")
+    lines.append("Backing device for these process pages is unknown; VmSwap does not distinguish zram from disk swap.")
+    return _finding(
+        "storage_desktop_swap_possible",
+        "info",
+        "Memory",
+        "Desktop processes have swapped memory; backing device is unknown",
+        "The current-boot canary observed swapped memory in desktop processes while disk-backed swap was also in use system-wide. "
+        "Linux VmSwap does not reveal which swap device owns those pages, so this does not prove the desktop is waiting on disk. "
+        "Treat it as context only; no disk-stall diagnosis or desktop-restart recommendation is justified.",
+        lines,
+        confidence="low",
+        scope="possible",
+    )
 
 def io_culprit_finding(samples: list[dict[str, Any]]) -> dict[str, Any] | None:
     worst: dict[tuple[str, str], dict[str, Any]] = {}
