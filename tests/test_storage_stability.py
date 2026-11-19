@@ -61,16 +61,18 @@ class TestRootDisk:
         partition.mkdir(parents=True)
         (partition / "partition").write_text("3")
         (physical / "device").mkdir()
-        (physical / "device" / "model").write_text("INTEL SSDPEKNW512G8\\n")
+        (physical / "device" / "model").write_text("INTEL SSDPEKNW512G8\n")
 
         dm = tmp_path / "devices" / "virtual" / "block" / "dm-0"
         (dm / "slaves").mkdir(parents=True)
         (dm / "slaves" / "nvme0n1p3").symlink_to(partition)
         class_block = tmp_path / "class" / "block"
         class_block.mkdir(parents=True)
+        (class_block / "nvme0n1p3").symlink_to(partition)
+        (class_block / "nvme0n1").symlink_to(physical)
         (class_block / "dm-0").symlink_to(dm)
 
-        mountinfo = "62 1 253:0 / / rw - ext4 /dev/dm-0 rw\\n"
+        mountinfo = "62 1 253:0 / / rw - ext4 /dev/dm-0 rw\n"
         assert ss.root_disk(mountinfo, sys_root=str(tmp_path)) == {
             "disk": "nvme0n1", "model": "INTEL SSDPEKNW512G8"
         }
