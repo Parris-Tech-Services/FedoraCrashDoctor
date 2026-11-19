@@ -180,9 +180,7 @@ class TestCanaryIoTracker:
             return default
 
         clock = iter([100.0, 102.0])
-        with patch("canary.os.listdir", return_value=["101"]), \\
-             patch("canary.read_text", side_effect=fake_read), \\
-             patch("canary.time.monotonic", side_effect=lambda: next(clock)):
+        with patch("canary.os.listdir", return_value=["101"]), patch("canary.read_text", side_effect=fake_read), patch("canary.time.monotonic", side_effect=lambda: next(clock)):
             tracker = canary.IoTracker()
             assert tracker.update() == []
             start_time["101"] = "9999"
